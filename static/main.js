@@ -1,7 +1,7 @@
-import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
+import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table,dots} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
 
-const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
+const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],groups:[],packets:[],study:null,studies:[],query:""};
 const dialog=q("#dialog");
 const nav=[
   ["collection","Specimens","tiles"],
@@ -134,6 +134,7 @@ function optionInput(key,item) {
   if (kind==="flag") return checkField(label,key,value);
   if (kind==="region") return selectField(label,key,option("","Auto / current area","")+state.tile.regions.filter(record=>item.purpose?record.purpose===item.purpose:record.purpose!=="ignore").map(record=>option(record.id,record.name)).join(""));
   if (kind==="reference") return selectField(label,key,option("","Choose a reference","")+state.refs.map(record=>option(record.id,record.title)).join(""));
+  if (kind==="reference_group") return selectField(label,key,option("","Choose a reference group","")+(state.groups||[]).map(record=>option(record.id,record.title)).join(""));
   if (kind==="point") return `<div class="field"><span>${e(label)} (X, Y)</span><div class="point-group">
     ${value.map((coordinate,index)=>`<input name="${key}-${index}" aria-label="${e(label)} ${index===0?"X":"Y"}" type="number" min="0" max="1" step=".001" value="${coordinate}">`).join("")}</div></div>`;
   return "";
@@ -219,9 +220,21 @@ function tilePage() {
   ${{captures,regions:regionPage,measure:measurements,geometry:geometryPage,evidence:evidencePage}[state.tab]()}`;
 }
 
+function groupCard(group) {
+  return `<article class="card stack"><h3>${e(group.title)}</h3>
+    <div class="swatches">${group.members.map(item=>dots(item.retired?`${item.title} (retired)`:item.title,item.swatch)).join(" ")}</div>
+    <p>${group.active_members} active ${group.active_members===1?"sample":"samples"} · ${group.distinct_tiles} distinct ${group.distinct_tiles===1?"tile":"tiles"}${group.notes?" · "+e(group.notes):""}</p>
+    <div class="actions">${btn("Delete group","group-delete","ghost",null,`data-id="${group.id}"`)}</div></article>`;
+}
+
 function libraryPage() {
   const items=state.refs;
-  return `<header class="page-head"><div><h1>Reference library</h1><p>Approved color samples retain their capture, region, and neutral-card basis.</p></div></header>
+  const groups=state.groups||[];
+  return `<header class="page-head"><div><h1>Reference library</h1><p>Approved color samples retain their capture, region, and neutral-card basis.</p></div>
+    <div class="actions">${btn("New reference group","group-add","primary","plus")}</div></header>
+    ${groups.length?`<div class="section-head compact"><div><h2>Reference groups</h2><p>Measure a specimen against every photographed sample in a group. Colors between samples stay unverified.</p></div></div>
+    <div class="collection">${groups.map(groupCard).join("")}</div>`:""}
+    <div class="section-head"><div><h2>Approved references</h2><p>${items.length} ${items.length===1?"sample":"samples"}</p></div></div>
     ${items.length?`<div class="collection">${items.map(ref=>`<article class="card stack">${img(`/api/library/${ref.id}/image`,ref.title,'loading="lazy"')}
     <h3>${e(ref.title)}</h3><p>${e(ref.family || ref.specimen.name)} · ${e(ref.fingerprint.swatch)}</p>
     <div class="actions">${link("Open specimen","#tile:"+ref.tile_id,"secondary","tiles")}${btn("Retire","reference-retire","ghost",null,`data-id="${ref.id}"`)}</div></article>`).join("")}</div>`:empty("Approve a visual reference from a specimen with a registered capture.",link("Open specimens","#collection","primary","tiles"))}`;
@@ -251,8 +264,8 @@ function render() {
 
 async function gatherTile(token=travel) {
   const url=tileUrl();
-  const [results,packets,activity,refs,metrology]=await Promise.all([
-    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),
+  const [results,packets,activity,refs,metrology,groups]=await Promise.all([
+    api(url+"/results"),api(url+"/evidence"),api(url+"/activity"),api("/api/library"),api(url+"/metrology"),api("/api/reference-groups"),
   ]);
   if (token!==travel) return;
   state.results=results.items;
@@ -260,6 +273,7 @@ async function gatherTile(token=travel) {
   state.activity=activity.items;
   state.metrology=metrology.items;
   state.refs=refs.items;
+  state.groups=groups.items;
 }
 
 async function route() {
@@ -279,8 +293,8 @@ async function route() {
     return;
   }
   if (hash==="references") {
-    const refs=await api("/api/library");
-    if (token===travel) {state.refs=refs.items;state.page="references";render();}
+    const [refs,groups]=await Promise.all([api("/api/library"),api("/api/reference-groups")]);
+    if (token===travel) {state.refs=refs.items;state.groups=groups.items;state.page="references";render();}
     return;
   }
   if (hash==="studies") {
@@ -493,6 +507,28 @@ function refForm() {
     });
 }
 
+function groupForm() {
+  const available=state.refs.filter(item=>!item.retired);
+  if (available.length<2) throw Error("Approve at least two visual references before grouping them.");
+  const rows=available.map(ref=>`<label class="row field check"><input type="checkbox" name="member_id" value="${ref.id}">
+    <span class="grow">${e(ref.title)} · ${e(ref.specimen.name)} · ${e(ref.fingerprint.swatch)}</span></label>`).join("");
+  modal("New reference group",`
+    ${textField("Group name","title","","required maxlength=\"100\"")}
+    <p class="soft">Choose the approved samples that belong together. Repeated records of the same specimen count as one tile when measuring.</p>
+    <div class="divider-list scroll-list">${rows}</div>
+    ${areaField("Notes","notes","",1200)}
+    <p class="notice">Membership is fixed once the group is created. Measured colors between the photographed samples stay unverified instead of being interpolated.</p>`,
+    "Create group",async data=>{
+      const member_ids=data.getAll("member_id");
+      if (member_ids.length<2) throw Error("Select at least two approved references.");
+      await api("/api/reference-groups",{method:"POST",body:{title:data.get("title"),notes:data.get("notes"),member_ids}});
+      state.groups=(await api("/api/reference-groups")).items;
+      commitModal();
+      toast("Reference group created.");
+      render();
+    });
+}
+
 function pairForm() {
   const ready=state.tile.photos.filter(item=>item.registered_url);
   if (ready.length<2) throw Error("Register at least two captures first.");
@@ -701,6 +737,17 @@ async function doAction(name,target) {
     neutral:neutralForm,
     "neutral-clear":()=>patchTile("/calibration","DELETE",{},"Neutral-card balance cleared."),
     "reference-add":refForm,
+    "group-add":groupForm,
+    "group-delete":()=>{
+      const group=(state.groups||[]).find(item=>item.id===id);
+      modal("Delete reference group?",`<p>“${e(group?.title||"")}” will be removed. Saved measurements keep the group snapshot they used, and the approved references stay in the library.</p>`,"Delete group",async ()=>{
+        await api("/api/reference-groups/"+id,{method:"DELETE"});
+        state.groups=(await api("/api/reference-groups")).items;
+        commitModal();
+        toast("Reference group deleted.");
+        render();
+      });
+    },
     "reference-retire":()=>{
       const ref=state.refs.find(item=>item.id===id);
       modal("Retire visual reference?",'<p>Earlier measurements keep the approved sample they used.</p>',"Retire reference",async ()=>{

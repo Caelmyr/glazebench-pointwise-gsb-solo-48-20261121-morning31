@@ -21,6 +21,7 @@ SIGNED = (
     (1.00, (238, 98, 68)),
 )
 COVERAGE_PALETTE = np.asarray(((235, 178, 94), (218, 216, 146), (91, 168, 143)), dtype=np.float32) / 255
+SUPPORT_PALETTE = np.asarray(((233, 138, 76), (91, 168, 143)), dtype=np.float32) / 255
 MAX_PREVIEW = 1440
 INK = (255, 245, 225)
 ACCENT = (246, 139, 96)
@@ -70,6 +71,20 @@ def coverage_overlay(frame, states, requested):
     underlying = frame.display()
     displayed = underlying * 0.48
     for label, color in enumerate(COVERAGE_PALETTE):
+        selector = states == label
+        displayed[selector] = 0.22 * underlying[selector] + 0.78 * color
+    unknown = frame.valid & requested & (states < 0)
+    rr, cc = np.ogrid[:states.shape[0], :states.shape[1]]
+    dark = ((rr - cc) % 12 < 3) & unknown
+    displayed[dark] = (0.12, 0.12, 0.12)
+    return uint8_image(displayed, frame.valid.astype(np.float32))
+
+
+def support_overlay(frame, states, requested):
+    """Group support map: 0 unsampled gap, 1 supported, -1 unmeasured."""
+    underlying = frame.display()
+    displayed = underlying * 0.48
+    for label, color in enumerate(SUPPORT_PALETTE):
         selector = states == label
         displayed[selector] = 0.22 * underlying[selector] + 0.78 * color
     unknown = frame.valid & requested & (states < 0)

@@ -19,6 +19,7 @@ export function metricSet(record) {
     rim: () => [["Rim median ΔE",n(m.all_edges.median_from_center_delta_e)],["Rim pixels",n(m.all_edges.pixels,0)],["Interior L*",n(m.interior.median_lab[0])]],
     profile: () => [["Distance",`${n(m.line_length)} ${m.distance_unit}`],["Valid stations",`${m.supported_stations}/${m.requested_stations}`],["Median L*",n(m.features.median_lightness)]],
     reference: () => [["Specimen to reference ΔE",n(m.delta_e76)],["Lightness difference",n(m.delta_lab[0])],["Dispersion difference",n(m.dispersion_delta)]],
+    reference_group: () => [["Supported by group",percent(m.supported_percent)],["Unsampled gap",percent(m.gap_percent)],["Distinct tiles",m.distinct_tiles]],
   }[record.kind]();
   return `<div class="metrics">${rows.map(([name,value])=>stat(name,value)).join("")}</div>`;
 }
@@ -95,10 +96,30 @@ function referenceDetail(m) {
     <p class="notice">${e(m.capture_note)}</p>`;
 }
 
+function referenceGroupDetail(m) {
+  const alerts=m.basis_alerts||[];
+  const basis=alerts.length
+    ? `<div class="notice warn"><strong>Capture basis differs for ${alerts.length} of ${m.member_count} group samples.</strong><ul>${alerts.map(item=>`<li>${e(item.title)}: ${e(item.note)}</li>`).join("")}</ul></div>`
+    : `<p class="notice">Every group sample shares this measurement's illumination label and neutral-card basis.</p>`;
+  const collapsed=(m.duplicates_collapsed||[]).map(item=>`<li>${e(item.title)} (${e(item.specimen_name)}) — counted under ${e(item.kept_under)}</li>`).join("");
+  const retired=(m.retired_excluded||[]).map(item=>`<li>${e(item.title)} (${e(item.specimen_name)})</li>`).join("");
+  return `<h3>${e(m.group_title)}</h3>
+    ${basis}
+    ${collapsed?`<div class="notice">Repeated records of the same specimen count once:<ul>${collapsed}</ul></div>`:""}
+    ${retired?`<div class="notice">Retired members excluded from this run:<ul>${retired}</ul></div>`:""}
+    <h3>Photographed samples</h3>
+    <div class="swatches">${m.members.map(item=>dots(item.title,item.swatch)).join(" ")}</div>
+    ${table(["Sample","Specimen","Radius ΔE","Covers specimen","Nearest ΔE median"],m.members.map(item=>[item.title,item.specimen_name,n(item.radius),percent(item.supported_percent),n(item.nearest_delta_median)]))}
+    <h3>Specimen palette against the group</h3>
+    <div class="swatches">${m.palette.map(item=>dots(`${percent(item.coverage_percent)} · ${item.status==="supported"?"supported":"unsampled gap"}`,item.swatch)).join(" ")}</div>
+    ${m.gap_palette.length?`<h3>Colors in the unsampled gap</h3><div class="swatches">${m.gap_palette.map(item=>dots(percent(item.coverage_percent),item.swatch)).join(" ")}</div>`:""}`;
+}
+
 function details(record) {
   const render = {
     color:colorDetail,coverage:coverageDetail,defects:defectsDetail,glare:glareDetail,
-    direction:directionDetail,texture:textureDetail,profile:profileDetail,reference:referenceDetail,craze:crazeDetail,rim:rimDetail,
+    direction:directionDetail,texture:textureDetail,profile:profileDetail,reference:referenceDetail,
+    reference_group:referenceGroupDetail,craze:crazeDetail,rim:rimDetail,
   }[record.kind];
   return render(record.kind==="defects" ? record : record.metrics);
 }

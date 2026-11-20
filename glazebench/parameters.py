@@ -101,6 +101,14 @@ TOOLS = {
             "reference_id": {"kind": "reference", "label": "Approved visual reference", "default": None},
         },
     },
+    "reference_group": {
+        "label": "Reference group support",
+        "description": "Mark which measured colors are covered by photographed samples in an approved reference group. Colors between samples stay unverified.",
+        "fields": {
+            "group_id": {"kind": "reference_group", "label": "Approved reference group", "default": None},
+            "tolerance": {"kind": "number", "label": "Match tolerance ΔE", "default": 2.5, "min": 0.5, "max": 8, "step": 0.1},
+        },
+    },
 }
 
 
@@ -120,6 +128,8 @@ def parsed_option(key, field, raw):
     if kind == "region":
         return identity(raw, label) if raw else None
     if kind == "reference":
+        return identity(raw, label)
+    if kind == "reference_group":
         return identity(raw, label)
     raise RuntimeError(f"Unknown measurement option {key}.")
 

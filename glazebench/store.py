@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS library (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS library_source ON library(tile_id);
+CREATE TABLE IF NOT EXISTS reference_groups (
+    id TEXT PRIMARY KEY,
+    document TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 CREATE TABLE IF NOT EXISTS evidence (
     id TEXT PRIMARY KEY,
     tile_id TEXT NOT NULL REFERENCES specimens(id),
@@ -361,6 +366,35 @@ class Store:
             )
             event(conn, ref["tile_id"], "reference", f"Retired visual reference: {ref['title']}")
             return ref
+
+    def save_group(self, fields):
+        now = timestamp()
+        group = {**fields, "id": make_id(), "version": 1, "created_at": now, "updated_at": now}
+        with self.transaction(write=True) as conn:
+            conn.execute(
+                "INSERT INTO reference_groups(id,document,updated_at) VALUES (?,?,?)",
+                (group["id"], document(group), now),
+            )
+        return group
+
+    def groups(self):
+        with self.connect() as conn:
+            rows = conn.execute("SELECT document FROM reference_groups ORDER BY rowid DESC LIMIT 100").fetchall()
+            return [json.loads(row["document"]) for row in rows]
+
+    def group(self, identifier):
+        chosen = identity(identifier, "Reference group ID")
+        with self.connect() as conn:
+            row = conn.execute("SELECT document FROM reference_groups WHERE id=?", (chosen,)).fetchone()
+            return artifact_row(row, "Reference group")
+
+    def delete_group(self, identifier):
+        chosen = identity(identifier, "Reference group ID")
+        with self.transaction(write=True) as conn:
+            row = conn.execute("SELECT document FROM reference_groups WHERE id=?", (chosen,)).fetchone()
+            group = artifact_row(row, "Reference group")
+            conn.execute("DELETE FROM reference_groups WHERE id=?", (chosen,))
+            return group
 
     def _evidence(self, conn, identifier):
         eid = identity(identifier, "Evidence ID")

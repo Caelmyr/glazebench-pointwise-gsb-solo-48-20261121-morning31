@@ -89,6 +89,15 @@ def result_metrics_table(record):
     elif kind == "glare":
         columns = ("pixels", "area_mm2", "bounds")
         rows = ([item[key] for key in columns] for item in metrics["hotspots"])
+    elif kind == "reference_group":
+        columns = ("member", "specimen", "median_lab", "radius_delta_e", "covers_specimen_percent", "basis_note")
+        rows = (
+            [
+                item["title"], item["specimen_name"], item["median_lab"], item["radius"],
+                item["supported_percent"], item["basis_note"] or "",
+            ]
+            for item in metrics["members"]
+        )
     else:
         columns = ("metric", "value")
         rows = [[key, val] for key, val in metrics.items() if not isinstance(val, (dict, list))]
@@ -276,6 +285,7 @@ def summarize_result(record):
         "rim": ("all_edges", "rim_band_pixels"),
         "profile": ("line_length", "distance_unit", "supported_stations"),
         "reference": ("reference_title", "delta_e76"),
+        "reference_group": ("group_title", "supported_percent", "gap_percent", "distinct_tiles"),
         "direction": ("left_strong_percent", "right_strong_percent"),
     }[record["kind"]]
     summary = {key: record[key] for key in (

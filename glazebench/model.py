@@ -48,6 +48,7 @@ ANALYSIS_LABELS = {
     "craze": "Crackle lines",
     "rim": "Color at the rim",
     "reference": "Reference match",
+    "reference_group": "Reference group support",
     "direction": "Raking light comparison",
 }
 
@@ -190,6 +191,15 @@ def flag_record_fields(payload):
     return {
         "decision": enumeration(data.get("decision"), ("confirm", "dismiss", "review"), "Decision"),
         "notes": string(data.get("notes"), "Observation notes", maximum=240, required=False),
+    }
+
+
+def group_fields(payload):
+    data = dictionary(payload, "Reference group")
+    return {
+        "title": string(data.get("title"), "Group name", maximum=100),
+        "notes": string(data.get("notes"), "Group notes", maximum=1200, required=False),
+        "member_ids": unique_ids(data.get("member_ids"), "Group members", minimum=2, maximum=12),
     }
 
 

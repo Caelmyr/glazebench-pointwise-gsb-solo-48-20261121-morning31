@@ -8,6 +8,7 @@ from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .analysis import approve_reference, evaluate
 from .demo import load_training, preview_photo
+from .groups import create_group, present_group
 from .evidence import (
     artifact_json,
     create_evidence,
@@ -304,6 +305,23 @@ def register_measurements(api, store, heavy):
     @api.get("/library/<reference_id>/image")
     def ref_image(reference_id):
         return png_blob(store, store.reference(reference_id)["annotated_digest"])
+
+    @api.get("/reference-groups")
+    def reference_groups():
+        return jsonify({"items": [present_group(store, group) for group in store.groups()]})
+
+    @api.post("/reference-groups")
+    def reference_group_save():
+        return jsonify(present_group(store, create_group(store, json_request()))), 201
+
+    @api.get("/reference-groups/<group_id>")
+    def reference_group_show(group_id):
+        return jsonify(present_group(store, store.group(group_id)))
+
+    @api.delete("/reference-groups/<group_id>")
+    def reference_group_delete(group_id):
+        store.delete_group(group_id)
+        return jsonify({"deleted": identity(group_id, "Reference group ID")})
 
 
 def register_artifacts(api, store, heavy):

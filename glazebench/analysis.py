@@ -9,6 +9,7 @@ from .art import (
     reviewed_markers,
     signed_overlay,
     stored_preview,
+    support_overlay,
 )
 from .color import (
     capture_basis,
@@ -21,6 +22,7 @@ from .color import (
 from .coverage import measure_coverage
 from .defects import measure_defects
 from .craze import measure_craze
+from .groups import measure_group_support, resolve_group
 from .rim import measure_rim
 from .geometry import active_region, analysis_mask, region_domain, specimen_frame
 from .lighting import measure_direction, measure_glare
@@ -140,6 +142,8 @@ def resolve_parameters(store, tile, payload):
         reference = store.reference(params["options"]["reference_id"])
         if reference["retired"]:
             raise InputError("The selected reference has been retired.")
+    if kind == "reference_group":
+        reference = resolve_group(store, params["options"]["group_id"])
     if kind == "defects" and params["options"]["maximum_area"] <= params["options"]["minimum_area"]:
         raise InputError("Maximum spot size must exceed the minimum.")
     return params, reference
@@ -159,6 +163,12 @@ def theoretical_legend(kind, scale=None):
             {"name": "Bare", "color": "#ebb25e"},
             {"name": "Mixed", "color": "#dad892"},
             {"name": "Glazed", "color": "#5ba88f"},
+            {"name": "Unmeasured", "color": "#353a3a"},
+        ]}
+    if kind == "reference_group":
+        return {"mode": "categorical", "labels": [
+            {"name": "Supported by group samples", "color": "#5ba88f"},
+            {"name": "Unsampled gap", "color": "#e98a4c"},
             {"name": "Unmeasured", "color": "#353a3a"},
         ]}
     return None
@@ -211,6 +221,11 @@ def compute_single(store, tile, frame, region, area, linear, correction, params,
         map_values = reference_map(linear, reference["fingerprint"])
         scale = formula_scale(map_values, support, 12)
         return metrics, magnitude_overlay(frame, map_values, support, scale), theoretical_legend(kind, scale)
+    if kind == "reference_group":
+        basis = capture_basis(tile, frame, correction)
+        metrics, states = measure_group_support(linear, support, reference, options["tolerance"], basis)
+        image = support_overlay(frame, states, area)
+        return metrics, image, theoretical_legend(kind)
     raise RuntimeError(f"Unsupported image measurement: {kind}.")
 
 
@@ -231,13 +246,50 @@ def compute_pair(tile, first, second, area, params):
 
 
 def result_key(tile, params, reference):
+    descriptor = None
+    if reference is not None:
+        if params["kind"] == "reference_group":
+            descriptor = {
+                "group": reference["group"]["id"],
+                "members": [[item["id"], item["retired"]] for item in reference["all_members"]],
+            }
+        else:
+            descriptor = reference["version"]
     return key_for({
         "analyzer_version": ANALYZER_VERSION,
         "params": params,
         "tile_id": tile["id"],
         "tile_version": tile["version"],
-        "reference_version": reference["version"] if reference else None,
+        "reference_version": descriptor,
     })
+
+
+def reference_provenance(kind, reference):
+    if reference is None:
+        return None
+    if kind == "reference_group":
+        return {
+            "id": reference["group"]["id"],
+            "version": reference["group"]["version"],
+            "title": reference["group"]["title"],
+            "members": [
+                {
+                    "id": member["id"],
+                    "version": member["version"],
+                    "specimen": member["specimen"],
+                    "capture": member["source"],
+                    "basis": member["basis"],
+                }
+                for member in reference["members"]
+            ],
+        }
+    return {
+        "id": reference["id"],
+        "version": reference["version"],
+        "specimen": reference["specimen"],
+        "capture": reference["source"],
+        "basis": reference["basis"],
+    }
 
 
 def evaluate(store, tile_id, payload):
@@ -276,13 +328,7 @@ def evaluate(store, tile_id, payload):
             "region": region,
             "exclusions": [item for item in tile["regions"] if item["purpose"] == "ignore"],
             "neutral_card": correction,
-            "reference": {
-                "id": reference["id"],
-                "version": reference["version"],
-                "specimen": reference["specimen"],
-                "capture": reference["source"],
-                "basis": reference["basis"],
-            } if reference else None,
+            "reference": reference_provenance(params["kind"], reference),
         },
         "pictures": {
             "source": stored_preview(base_rgba(frame, linear), store.blobs),
