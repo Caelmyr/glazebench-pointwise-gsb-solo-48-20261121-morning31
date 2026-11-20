@@ -252,8 +252,13 @@ def register_measurements(api, store, heavy):
     @api.get("/results/<measurement_id>/image/<layer>")
     def measurement_image(measurement_id, layer):
         data = store.result(measurement_id)
-        chosen = enumeration(layer, ("overlay", "source", "paired", "reference"), "Measurement image")
-        digest = data["metrics"].get("reference_image") if chosen == "reference" else data["pictures"][chosen]
+        chosen = enumeration(layer, ("overlay", "pattern", "source", "paired", "reference"), "Measurement image")
+        if chosen == "reference":
+            digest = data["metrics"].get("reference_image")
+        else:
+            digest = data["pictures"].get(chosen)
+        if digest is None:
+            raise MissingError("No image exists for this selected layer.")
         return png_blob(store, digest)
 
     @api.get("/results/<measurement_id>/metrics.csv")

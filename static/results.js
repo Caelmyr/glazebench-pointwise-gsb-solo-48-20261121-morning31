@@ -1,7 +1,7 @@
 import {badge, btn, e, img, link, n, percent, plot, stat, table, date, dots} from "./widgets.js";
 
 const colors = ["#58836b","#b26a4a","#818d40","#786f99"];
-const layers = {overlay:"Measurement map",source:"Source plane",paired:"Paired plane",reference:"Reference image"};
+const layers = {overlay:"Measurement map",pattern:"Local pattern",source:"Source plane",paired:"Paired plane",reference:"Reference image"};
 
 export function metricSet(record) {
   const m = record.metrics;
@@ -25,11 +25,23 @@ export function metricSet(record) {
 
 function legend(record) {
   if (!record.legend) return "";
+  if (record.kind==="texture" && record.layer==="pattern") return patternLegend(record);
   const scale=record.legend;
   if (scale.mode==="categorical") {
     return `<div class="legend"><span>Image classification</span><div class="swatches">${scale.labels.map(label=>dots(label.name,label.color)).join("")}</div></div>`;
   }
   return `<div class="legend"><span>${e(scale.label)}</span><span>${n(scale.low,4)} to ${n(scale.high,4)}</span></div><div class="gradient ${e(scale.mode)}"></div>`;
+}
+
+function patternLegend(record) {
+  const scale=record.legend;
+  const m=record.metrics.local_pattern;
+  const share=percent(100*m.summary.periodic_cells/Math.max(1,m.cells.length));
+  const unit=(scale.pattern_label||"").replace(/^.*\((.*)\)$/,"$1");
+  const range=scale.pattern_low==null ? "no confirmed spacing" : `${n(scale.pattern_low,3)}–${n(scale.pattern_high,3)} ${e(unit)}`;
+  return `<div class="legend"><span>Confirmed ${e(share)} · ${m.summary.uncertain_cells} uncertain windows</span><span>${e(range)}</span></div>
+    <div class="gradient"></div>
+    <div class="legend"><div class="swatches">${dots("Confirmed repeat · line shows ridge direction","#ebcc72")}${dots("Uncertain · mixed, occluded or too few repeats","#b0b2a8")}</div></div>`;
 }
 
 function colorDetail(m) {
@@ -57,10 +69,32 @@ function defectsDetail(record) {
 }
 
 function textureDetail(m) {
+  const local=m.local_pattern;
+  const periodic=local.cells.filter(cell=>cell.periodic);
+  const unit=local.summary.spacing_unit || "px";
+  const localTable=periodic.length ? table(
+    ["Window (col, row)","Ridge axis","Repeat spacing","Cycles seen","First / second correlation"],
+    periodic.map(cell=>[
+      `${cell.column}, ${cell.row}`,
+      n(cell.ridge_angle_clockwise)+"°",
+      cell.spacing_mm!=null ? `${n(cell.spacing_mm,3)} mm` : `${n(cell.spacing_px,2)} px`,
+      n(cell.visible_repeats,1),
+      `${n(cell.first_correlation,3)} / ${n(cell.harmonic_correlation,3)}`,
+    ]),
+  ) : "<p class='plot-note'>No window showed several clean repeat cycles.</p>";
+  const reasons={};
+  local.cells.filter(cell=>!cell.periodic).forEach(cell=>{reasons[cell.reason]=(reasons[cell.reason]||0)+1;});
   return `<h3>Texture repeats by direction</h3>
     ${plot(m.lag_curves.map((dir,index)=>({values:dir.points.map(point=>point.correlation),color:colors[index]})),"Spacing along each direction",{min:-1,max:1})}
     <div class="swatches">${m.lag_curves.map((dir,index)=>dots(dir.direction,colors[index])).join(" ")}</div>
     ${table(["Direction","Peak spacing","Correlation"],m.lag_curves.flatMap(dir=>dir.local_highs.map(point=>[dir.direction,point.spacing_mm ? `${n(point.spacing_mm)} mm` : `${n(point.spacing_px)} px`,n(point.correlation,3)])))}
+    <h3>Local pattern windows</h3>
+    <div class="metrics">${stat(local.summary.periodic_cells,"Confirmed windows")}${stat(local.summary.uncertain_cells,"Uncertain windows")}
+      ${local.summary.spacing_median!=null?stat(`${n(local.summary.spacing_median,3)} ${unit}`,"Median local spacing"):""}
+      ${local.summary.angle_median!=null?stat(n(local.summary.angle_median)+"°","Median ridge axis"):""}</div>
+    <p class="plot-note">${e(m.pattern_note)} Click a window on the Local pattern map to inspect it, then open the Source plane layer to re-check the original texture.</p>
+    ${Object.keys(reasons).length?`<div class="swatches">${Object.entries(reasons).map(([reason,count])=>dots(`${count} · ${e(reason)}`,"#b0b2a8")).join(" ")}</div>`:""}
+    <details><summary>Confirmed local windows (${periodic.length})</summary>${localTable}</details>
     <p class="plot-note">${e(m.note)}</p>`;
 }
 
@@ -103,15 +137,60 @@ function details(record) {
   return render(record.kind==="defects" ? record : record.metrics);
 }
 
+function selectedWindowSvg(record) {
+  const cell=record.patternCell;
+  if (record.kind!=="texture" || record.layer!=="source" || !cell) return "";
+  const [l,t,r,b]=cell.normalized_bounds;
+  return `<svg class="pattern-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-label="Selected texture window">
+    <rect x="${(l*1000).toFixed(2)}" y="${(t*1000).toFixed(2)}" width="${((r-l)*1000).toFixed(2)}" height="${((b-t)*1000).toFixed(2)}"
+      class="pattern-cell selected" fill="rgba(244,201,109,0.14)" stroke="#f4c96d" stroke-width="3" vector-effect="non-scaling-stroke"/></svg>`;
+}
+
+function patternOverlaySvg(record) {
+  if (record.kind!=="texture" || record.layer!=="pattern") return "";
+  const cells=record.metrics.local_pattern?.cells || [];
+  if (!cells.length) return "";
+  const selected=record.patternCell;
+  const rects=cells.map(cell=>{
+    const [l,t,r,b]=cell.normalized_bounds;
+    const isSelected=selected && selected.row===cell.row && selected.column===cell.column;
+    const label=cell.periodic
+      ? `Window ${cell.column},${cell.row} · ridge ${n(cell.ridge_angle_clockwise)}° · ${cell.spacing_mm!=null?n(cell.spacing_mm,3)+" mm":n(cell.spacing_px,2)+" px"}`
+      : `Window ${cell.column},${cell.row} · uncertain · ${cell.reason}`;
+    return `<rect class="pattern-cell ${cell.periodic?"periodic":"uncertain"}${isSelected?" selected":""}" data-do="pattern-cell" data-row="${cell.row}" data-column="${cell.column}"
+      x="${(l*1000).toFixed(2)}" y="${(t*1000).toFixed(2)}" width="${((r-l)*1000).toFixed(2)}" height="${((b-t)*1000).toFixed(2)}">
+      <title>${label}</title></rect>`;
+  }).join("");
+  return `<svg class="pattern-overlay" viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-label="Clickable local texture windows">${rects}</svg>`;
+}
+
+function patternInspector(record) {
+  if (record.kind!=="texture" || !record.patternCell) return "";
+  if (record.layer!=="pattern" && record.layer!=="source") return "";
+  const cell=record.patternCell;
+  const back=btn("Back to local pattern","result-layer","tiny secondary",null,'data-value="pattern"');
+  const source=btn("Open source plane here","result-layer","tiny secondary",null,'data-value="source"');
+  if (!cell.periodic) {
+    return `<div class="notice warn"><strong>Window ${cell.column}, ${cell.row} · uncertain</strong><br>${e(cell.reason)} · ${n(cell.supported_pixels,0)} supported px
+      <div class="actions">${record.layer==="pattern"?source:back}</div></div>`;
+  }
+  return `<div class="notice"><strong>Window ${cell.column}, ${cell.row}</strong> · ridge axis ${n(cell.ridge_angle_clockwise)}° · coherence ${n(cell.coherence,3)}
+    · spacing ${cell.spacing_mm!=null?`${n(cell.spacing_mm,3)} mm (${n(cell.spacing_px,2)} px)`:`${n(cell.spacing_px,2)} px`}
+    · ${n(cell.visible_repeats,1)} cycles visible · correlations ${n(cell.first_correlation,3)} / ${n(cell.harmonic_correlation,3)}
+    <div class="actions">${record.layer==="pattern"?source:back}</div></div>`;
+}
+
 export function resultCard(record, layer, currentRevision) {
   const path=`/api/results/${record.id}`;
-  const available = ["overlay","source",...(record.pictures.paired ? ["paired"] : []),...(record.metrics.reference_image ? ["reference"] : [])];
+  const view={...record,layer};
+  const available = ["overlay",...(record.pictures.pattern ? ["pattern"] : []),"source",...(record.pictures.paired ? ["paired"] : []),...(record.metrics.reference_image ? ["reference"] : [])];
   const old = record.source_version !== currentRevision;
   return `<section class="card stack">
     <div class="title-row"><div><h3>${e(record.label)}</h3><small>Specimen revision ${record.source_version} · ${e(date(record.created_at))}</small></div>${old ? badge("Earlier specimen revision","caution") : badge("Saved measurement","ready")}</div>
     <div class="actions">${available.map(key=>btn(layers[key],"result-layer",layer===key?"tiny primary":"tiny secondary",null,`data-value="${key}"`)).join("")}</div>
-    <figure class="stage">${img(path+"/image/"+layer+"?v="+record.version,`${record.label} · ${layers[layer]}`)}</figure>
-    ${layer==="overlay"?legend(record):""}
+    <figure class="stage pattern-stage">${img(path+"/image/"+layer+"?v="+record.version,`${record.label} · ${layers[layer]}`)}${patternOverlaySvg(view)}${selectedWindowSvg(view)}</figure>
+    ${patternInspector(view)}
+    ${(layer==="overlay"||layer==="pattern")?legend(view):""}
     ${metricSet(record)}
     <section>${details(record)}</section>
     <details><summary>Measurement source</summary>${table(["Property","Value"],[

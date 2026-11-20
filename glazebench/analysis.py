@@ -28,10 +28,10 @@ from .model import ANALYSIS_LABELS, InputError, library_fields
 from .parameters import TOOLS, analysis_parameters
 from .profile import measure_profile
 from .store import key_for
-from .texture import measure_texture
+from .texture import measure_texture, pattern_overlay
 
 
-ANALYZER_VERSION = 1
+ANALYZER_VERSION = 2
 
 
 def selected_capture(tile, explicit, expected_role=None):
@@ -187,9 +187,19 @@ def compute_single(store, tile, frame, region, area, linear, correction, params,
         image = reviewed_markers(frame, metrics["observations"], source=linear)
         return metrics, image, None
     if kind == "texture":
-        metrics, roughness, valid = measure_texture(frame, linear, area, options)
+        metrics, roughness, valid, spacing_scale = measure_texture(frame, linear, area, options)
         scale = formula_scale(roughness, valid, 0.01)
-        return metrics, magnitude_overlay(frame, roughness, valid, scale), theoretical_legend(kind, scale)
+        picture = magnitude_overlay(frame, roughness, valid, scale)
+        pattern_picture = pattern_overlay(frame, linear, metrics["local_pattern"], spacing_scale)
+        legend = theoretical_legend(kind, scale)
+        unit = "mm" if frame.scale else "px"
+        if spacing_scale:
+            legend["pattern_label"] = f"Local repeat spacing ({unit})"
+            legend["pattern_low"] = spacing_scale[0]
+            legend["pattern_high"] = spacing_scale[1]
+        else:
+            legend["pattern_label"] = "No locally confirmed repeat spacing"
+        return metrics, picture, legend, pattern_picture
     if kind == "craze":
         metrics, image = measure_craze(frame, linear, area, options)
         return metrics, image, None
@@ -255,9 +265,12 @@ def evaluate(store, tile_id, payload):
     linear = frame.linear
     if pair is not None:
         metrics, picture, legend = compute_pair(tile, frame, pair, area, params)
+        pattern_picture = None
     else:
         linear, correction = corrected_linear(tile, frame, params["apply_neutral"])
-        metrics, picture, legend = compute_single(store, tile, frame, region, area, linear, correction, params, reference)
+        outcome = compute_single(store, tile, frame, region, area, linear, correction, params, reference)
+        pattern_picture = outcome[3] if len(outcome) == 4 else None
+        metrics, picture, legend = outcome[:3]
     result = {
         "tile_id": tile_id,
         "source_version": tile["version"],
@@ -287,6 +300,7 @@ def evaluate(store, tile_id, payload):
         "pictures": {
             "source": stored_preview(base_rgba(frame, linear), store.blobs),
             "overlay": stored_preview(picture, store.blobs),
+            "pattern": stored_preview(pattern_picture, store.blobs) if pattern_picture is not None else None,
             "paired": stored_preview(base_rgba(pair), store.blobs) if pair else None,
         },
     }

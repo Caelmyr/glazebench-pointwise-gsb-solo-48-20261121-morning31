@@ -730,11 +730,17 @@ async function doAction(name,target) {
     },
     "result-open":async ()=>{
       state.result=await api("/api/results/"+id);
+      state.result.patternCell=null;
       state.layer="overlay";
       state.tab="measure";
       render();
     },
     "result-layer":()=>{state.layer=value;render();},
+    "pattern-cell":()=>{
+      const cells=state.result.metrics.local_pattern?.cells || [];
+      state.result.patternCell=cells.find(cell=>cell.row===Number(target.dataset.row)&&cell.column===Number(target.dataset.column)) || null;
+      render();
+    },
     "defect-choice":async ()=>{
       state.result=await api(`/api/results/${state.result.id}/observations/${marker}`,{method:"PUT",body:{version:state.result.version,decision:value,notes:""}});
       toast("Observation reviewed.");

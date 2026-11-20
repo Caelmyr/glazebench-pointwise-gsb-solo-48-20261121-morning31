@@ -67,12 +67,33 @@ def result_metrics_table(record):
         columns = ("cell", "bounds", "pixels", "lab", "delta_from_center", "within_p90", "swatch")
         rows = ([item[key] for key in columns] for item in metrics["cells"])
     elif kind == "texture":
-        columns = ("direction", "spacing_px", "spacing_mm", "sample_pairs", "correlation")
-        rows = (
-            [curve["direction"], point["spacing_px"], point.get("spacing_mm"), point["sample_pairs"], point["correlation"]]
-            for curve in metrics["lag_curves"]
-            for point in curve["points"]
-        )
+        stream = StringIO(newline="")
+        writer = csv.writer(stream, lineterminator="\r\n")
+        writer.writerow(("direction", "spacing_px", "spacing_mm", "sample_pairs", "correlation"))
+        for curve in metrics["lag_curves"]:
+            for point in curve["points"]:
+                writer.writerow([
+                    csv_cell(curve["direction"]), point["spacing_px"], point.get("spacing_mm"),
+                    point["sample_pairs"], point["correlation"],
+                ])
+        pattern = metrics.get("local_pattern")
+        if pattern:
+            writer.writerow(())
+            writer.writerow((
+                "cell_row", "cell_column", "periodic", "ridge_angle_clockwise", "coherence",
+                "spacing_px", "spacing_mm", "visible_repeats", "first_correlation",
+                "harmonic_correlation", "supported_pixels", "uncertain_reason",
+                "normalized_center_x", "normalized_center_y",
+            ))
+            for cell in pattern["cells"]:
+                writer.writerow([
+                    cell["row"], cell["column"], cell["periodic"], cell.get("ridge_angle_clockwise"),
+                    cell.get("coherence"), cell.get("spacing_px"), cell.get("spacing_mm"),
+                    cell.get("visible_repeats"), cell.get("first_correlation"),
+                    cell.get("harmonic_correlation"), cell["supported_pixels"], cell.get("reason", ""),
+                    cell["normalized_center"][0], cell["normalized_center"][1],
+                ])
+        return stream.getvalue().encode("utf-8-sig")
     elif kind == "rim":
         columns = ("side", "depth_from", "depth_to", "pixels", "median_lab", "median_from_center_delta_e")
         rows = (
