@@ -5,7 +5,7 @@ import numpy as np
 from PIL import Image, ImageDraw
 from scipy import ndimage
 
-from .model import InputError, MAX_REGISTERED_DIM, collection, numeric_pair, physical_scale
+from .model import InputError, MAX_REGISTERED_DIM, collection, dictionary, numeric_pair, physical_scale
 from .photos import open_working, linear_to_srgb, srgb_to_linear
 
 
@@ -92,7 +92,8 @@ def corners_parameter(value):
     if signed_area(points) < MIN_OVERLAP:
         raise InputError("Pick a clockwise tile plane that covers at least 8% of the photo.")
     for index in range(4):
-        if oriented_cross(points[index - 2], points[index - 1], points[index]) <= 0.002:
+        a, b, c = points[index - 1], points[index], points[(index + 1) % 4]
+        if oriented_cross(a, b, c) <= 0.002:
             raise InputError("Tile corners must form a convex clockwise quadrilateral without a folded edge.")
     return points
 
@@ -136,6 +137,98 @@ def homography(unit_target, source):
     ):
         raise InputError("The marked perspective is nearly singular. Choose a more front-facing photograph.")
     return matrix
+
+
+def fit_homography(unit_target, source):
+    """Least-squares homography from any number (>=4) of point correspondences.
+
+    Both inputs are normalized image coordinates. A normalized direct linear
+    transform keeps the solution stable when the points sit in a small cluster,
+    which is the common case when only the visible middle of a tile is usable.
+    """
+    x = np.asarray(unit_target, dtype=np.float64)
+    y = np.asarray(source, dtype=np.float64)
+    if x.shape != y.shape or x.ndim != 2 or x.shape[1] != 2 or len(x) < 4:
+        raise InputError("Mark at least four matching point pairs to suggest an alignment.")
+
+    def normalize(points):
+        centroid = points.mean(axis=0)
+        scale = math.sqrt(2.0) / max(float(np.mean(np.linalg.norm(points - centroid, axis=1))), 1e-12)
+        transform = np.array([[scale, 0, -scale * centroid[0]], [0, scale, -scale * centroid[1]], [0, 0, 1]])
+        return np.c_[points, np.ones(len(points))] @ transform.T, transform
+
+    x_norm, tx = normalize(x)
+    y_norm, ty = normalize(y)
+    rows = []
+    for (px, py, _), (qx, qy, _) in zip(x_norm, y_norm):
+        rows.append([px, py, 1, 0, 0, 0, -qx * px, -qx * py, -qx])
+        rows.append([0, 0, 0, px, py, 1, -qy * px, -qy * py, -qy])
+    _, _, vh = np.linalg.svd(np.asarray(rows, dtype=np.float64))
+    fitted = vh[-1].reshape(3, 3)
+    matrix = np.linalg.inv(ty) @ fitted @ tx
+    matrix /= matrix[2, 2]
+    if not np.all(np.isfinite(matrix)) or np.linalg.cond(matrix) > 5000:
+        raise InputError("The marked points cannot define a stable transform. Spread them across more of the tile.")
+    denominators = np.c_[x, np.ones(len(x))] @ matrix[2]
+    if np.min(denominators) <= 0.004:
+        raise InputError("The marked points imply a nearly folded perspective. Choose points across more of the tile.")
+    return matrix
+
+
+def apply_homography(matrix, points):
+    points = np.asarray(points, dtype=np.float64)
+    lifted = np.c_[points, np.ones(len(points))]
+    mapped = lifted @ matrix.T
+    return mapped[:, :2] / mapped[:, 2:3]
+
+
+def point_pairs_parameter(value, *, maximum=12):
+    data = collection(value, "Matching point pairs", minimum=4, maximum=maximum)
+    pairs = []
+    seen = set()
+    for index, item in enumerate(data):
+        dictionary(item, "Matching point pair")
+        base = numeric_pair(item.get("base"), f"Base point {index + 1}", lower=0, upper=1)
+        side = numeric_pair(item.get("side"), f"Side photo point {index + 1}", lower=0, upper=1)
+        key = (tuple(base), tuple(side))
+        if key in seen:
+            raise InputError("Remove the duplicated point pair before suggesting an alignment.")
+        seen.add(key)
+        pairs.append((base, side))
+    base_points = [item[0] for item in pairs]
+    side_points = [item[1] for item in pairs]
+    if len({tuple(point) for point in base_points}) != len(pairs):
+        raise InputError("Each base-photo point can only be used once.")
+    if len({tuple(point) for point in side_points}) != len(pairs):
+        raise InputError("Each side-photo point can only be used once.")
+    return base_points, side_points
+
+
+# A side capture may have a corner pushed outside the photo frame, so
+# registration corners are allowed a margin beyond the unit image while the
+# base-plane corners keep their strict in-frame validation.
+REGISTRATION_CORNER_LIMIT = 1.35
+
+
+def registration_corners_parameter(value):
+    points = [
+        numeric_pair(item, "Photo corner", lower=-REGISTRATION_CORNER_LIMIT, upper=REGISTRATION_CORNER_LIMIT)
+        for item in collection(value, "Photo corners", minimum=4, maximum=4)
+    ]
+    if signed_area(points) < 0.02:
+        raise InputError("The suggested quadrilateral covers too little of the side photo.")
+    for index in range(4):
+        a, b, c = points[index - 1], points[index], points[(index + 1) % 4]
+        if oriented_cross(a, b, c) <= 0.002:
+            raise InputError("The suggested corners must form a convex clockwise quadrilateral without a folded edge.")
+    matrix = homography(DEFAULT_CORNERS, points)
+    # The standard corner check assumes in-frame points; extrapolated corners
+    # legitimately produce larger perspective denominators, so re-check with a
+    # looser floor suited to the allowed off-frame margin.
+    unit = np.c_[np.asarray(DEFAULT_CORNERS), np.ones(4)]
+    if np.min(unit @ matrix[2]) <= 0.004 or np.linalg.cond(matrix) > 5000:
+        raise InputError("The suggested perspective is nearly singular. Add point pairs across more of the tile.")
+    return points
 
 
 def map_coordinates(matrix, target_x, target_y, source_width, source_height):

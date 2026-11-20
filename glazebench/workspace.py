@@ -5,6 +5,7 @@ from .geometry import (
     corners_parameter,
     homography,
     region_domain,
+    registration_corners_parameter,
     specimen_frame,
     validate_polygon,
 )
@@ -157,14 +158,19 @@ def remove_photo(store, tile_id, capture_id, payload):
 def preview_transform(store, tile_id, photo_id, payload, mode):
     current = store.tile(tile_id)
     photo_id = identity(photo_id, "Photo ID")
-    marked = corners_parameter(payload.get("corners"))
-    photo = match_slot(current["photos"], photo_id, "photo")
     if mode == "base":
+        marked = corners_parameter(payload.get("corners"))
+        photo = match_slot(current["photos"], photo_id, "photo")
         width = current["width_mm"] if payload.get("respect_scale", True) else None
         height = current["height_mm"] if payload.get("respect_scale", True) else None
         dims = canvas_dimensions(photo, marked, width, height)
         updated = {**current, "plane": {"photo_id": photo_id, "corners": marked, "size": list(dims)}}
     else:
+        # Side captures may have a corner pushed outside the photo frame, so
+        # registration corners use the relaxed validation while base corners
+        # stay strictly inside the image.
+        marked = registration_corners_parameter(payload.get("corners"))
+        photo = match_slot(current["photos"], photo_id, "photo")
         if current["plane"] is None or current["plane"]["photo_id"] == photo_id:
             raise InputError("Set another photo as the base before checking registration.")
         change = {"base_photo_id": current["plane"]["photo_id"], "corners": marked}
@@ -204,8 +210,7 @@ def save_plane(store, tile_id, payload):
 def save_registration(store, identifier, photo_id, payload):
     expected = model_version(payload)
     photo_id = identity(photo_id, "Photo ID")
-    corners = corners_parameter(payload.get("corners"))
-    homography(DEFAULT_CORNERS, corners)
+    corners = registration_corners_parameter(payload.get("corners"))
     current = store.tile(identifier)
     store.require_version(current, expected)
     frame = preview_transform(store, identifier, photo_id, payload, "registration")

@@ -1,3 +1,4 @@
+import base64
 import json
 import os
 from pathlib import Path
@@ -7,6 +8,7 @@ from flask import Blueprint, Flask, Response, jsonify, request, send_file, send_
 from werkzeug.exceptions import BadRequest, RequestEntityTooLarge
 
 from .analysis import approve_reference, evaluate
+from .assist import suggest_registration
 from .demo import load_training, preview_photo
 from .evidence import (
     artifact_json,
@@ -168,6 +170,17 @@ def register_specimens(api, store, heavy):
         with heavy:
             specimen = save_registration(store, specimen_id, photo_id, json_request())
         return jsonify(present_tile(specimen))
+
+    @api.post("/specimens/<specimen_id>/registrations/<photo_id>/assist")
+    def registration_assist(specimen_id, photo_id):
+        data = json_request()
+        tile = store.tile(specimen_id)
+        with heavy:
+            result = suggest_registration(store, tile, identity(photo_id, "Photo ID"), data)
+        evidence = result.pop("evidence")
+        payload = dict(result)
+        payload["evidence_png"] = "data:image/png;base64," + base64.b64encode(png_bytes(evidence)).decode("ascii")
+        return jsonify(payload)
 
     @api.post("/specimens/<specimen_id>/geometry/<photo_id>/preview")
     def geometry_test(specimen_id, photo_id):

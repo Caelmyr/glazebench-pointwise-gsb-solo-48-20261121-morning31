@@ -156,6 +156,16 @@ dialog::backdrop{background:#172a24b5}
 .draw-label{paint-order:stroke;stroke:#18291e;fill:#fff7d7;stroke-width:2px;vector-effect:non-scaling-stroke;font-size:30px}
 .stage-pair{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .stage-pair img{object-fit:contain;width:100%;max-height:55vh}
+.pair-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.pair-card{padding:10px;outline:2px solid transparent;outline-offset:-2px;transition:outline-color .15s,background .15s}
+.pair-card.picking{outline-color:var(--brush);background:#fbf3e8}
+.pair-card h3{font-size:13px;margin-bottom:8px}
+.pair-card .stage{min-height:160px;background:#263731}
+.pair-card .capture-drawing{cursor:crosshair}
+.pair-card .capture-drawing img{max-height:42vh}
+#assist-result{display:grid;gap:10px}
+#assist-result .notice.warn{margin:0}
+@media(max-width:700px){.pair-grid{grid-template-columns:1fr}.pair-card .capture-drawing img{max-height:34vh}}
 #toast{position:fixed;bottom:19px;right:21px;max-width:min(440px,calc(100% - 42px));padding:10px 13px;border-radius:7px;color:#fffbe6;background:#263b30;box-shadow:var(--shadow);z-index:8}
 #toast:empty{display:none}#toast.error{background:#893f34}
 @media(max-width:1230px){body{grid-template-columns:205px minmax(0,1fr)}.rail{padding-left:14px;padding-right:14px}.hero-text{padding:35px}}

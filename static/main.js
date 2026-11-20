@@ -22,6 +22,9 @@ let drawPoints=[];
 let drawLimit=0;
 let currentForm=null;
 let reviewUploads=[];
+let assistPairs=[];
+let assistSuggestion=null;
+let assistPane=null;
 
 function toast(message, isError=false) {
   clearTimeout(toastTimer);
@@ -416,6 +419,8 @@ function geometryForm(mode) {
   const existing=saving?(plane?.photo_id===item.id?plane?.corners:[]):state.tile.registrations[item.id]?.corners;
   modal(saving?"Mark the specimen plane":"Register capture",`
     <p class="notice">Mark the same four points clockwise, beginning at the upper-left tile corner. Clear the marks before drawing a new outline.</p>
+    ${saving?"":`<p class="soft">If a corner is hidden or shifted out of frame, point-pair assistance can suggest the alignment from a few visible common spots instead.</p>
+      <div class="actions">${btn("Assist with point pairs","assist-open","secondary","sample")}</div>`}
     ${drawing(item.preview_url,"Photo to mark")}<div class="actions">${btn("Clear points","draw-clear","tiny secondary")}${btn("Undo point","draw-undo","tiny ghost")}
       ${btn("Preview alignment","geometry-preview","tiny secondary",null,`data-mode="${mode}" data-id="${item.id}"`)}<span class="soft" id="draw-count"></span></div>
     ${saving?checkField("Reset existing regions and registrations if the plane changes","reset_regions",false):""}
@@ -431,6 +436,97 @@ function geometryForm(mode) {
       }
     },true);
   prepareDrawing(existing||[],4);
+}
+
+const pairDrawing = (url, alt, pane) => `<div class="stage pair-stage-card"><div class="capture-drawing" id="pair-stage-${pane}">${img(url,alt)}
+  <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" id="pair-overlay-${pane}"></svg></div></div>`;
+
+function pairDrawUpdate() {
+  for (const pane of ["base","side"]) {
+    const artist=q(`#pair-overlay-${pane}`);
+    if (!artist) continue;
+    const coords=assistPairs
+      .map((pair,index)=>({point:pair[pane],index}))
+      .filter(item=>item.point[0]!==null);
+    artist.innerHTML=coords.map(({point,index})=>
+      `<circle class="draw-point" cx="${point[0]*1000}" cy="${point[1]*1000}" r="11"/><text class="draw-label" x="${point[0]*1000+16}" y="${point[1]*1000+16}">${index+1}</text>`).join("");
+  }
+  const label=q("#pair-count");
+  if (label) {
+    const complete=assistPairs.filter(pair=>pair.base[0]!==null&&pair.side[0]!==null).length;
+    label.textContent=`${complete} complete of ${assistPairs.length} marked, 12 pair limit`;
+  }
+}
+
+function assistForm() {
+  const item=currentPhoto();
+  const base=state.tile.photos.find(photo=>photo.registration_state==="base");
+  if (!base || !item || item.id===base.id) throw Error("Open a non-base capture to use point-pair assistance.");
+  assistPairs=[];
+  assistSuggestion=null;
+  assistPane="base";
+  modal("Point-pair registration assistance",`
+    <p class="notice">Click the same physical spot on each photo to add a numbered pair. Mark at least four pairs, spread across the tile. Pair N on the base must be the same location as pair N on the side photo.</p>
+    <div class="pair-grid">
+      <section class="card pair-card" data-pane="base"><h3>Base photo · ${e(base.role_label)}</h3>
+        ${pairDrawing(base.preview_url,"Base photo for point pairs","base")}</section>
+      <section class="card pair-card" data-pane="side"><h3>Side photo · ${e(item.role_label)}</h3>
+        ${pairDrawing(item.preview_url,"Side photo for point pairs","side")}</section>
+    </div>
+    <div class="actions">${btn("Add on base photo","assist-pick-base","tiny secondary")}${btn("Add on side photo","assist-pick-side","tiny secondary")}
+      ${btn("Undo pair","assist-undo","tiny ghost")}${btn("Clear pairs","assist-clear","tiny ghost")}
+      <span class="soft" id="pair-count"></span></div>
+    <div class="actions">${btn("Suggest alignment","assist-run","primary","sample",`data-id="${item.id}"`)}</div>
+    <div id="assist-result"></div>`,
+    "Save suggested registration",async ()=>{
+      if (!assistSuggestion) throw Error("Generate a suggestion before saving.");
+      await patchTile("/registrations/"+item.id,"PUT",{corners:assistSuggestion.corners},"Capture registered from point pairs.",{viewer:"raw"});
+    },true,btn("Review / edit four corners","assist-edit-corners","secondary","frame"));
+  pairDrawUpdate();
+  highlightAssistPane();
+  const submit=q("#dialog-form button[type=submit]");
+  if (submit) submit.disabled=true;
+}
+
+function syncAssistSubmit() {
+  const submit=q("#dialog-form button[type=submit]");
+  if (submit) submit.disabled=!assistSuggestion;
+}
+
+function highlightAssistPane() {
+  qa(".pair-card").forEach(card=>card.classList.toggle("picking",card.dataset.pane===assistPane));
+}
+
+async function runAssist(photoId) {
+  const complete=assistPairs.filter(pair=>pair.base[0]!==null&&pair.side[0]!==null);
+  if (complete.length<4) throw Error("Mark at least four complete point pairs (one spot on each photo per pair).");
+  if (complete.length!==assistPairs.length) throw Error("Finish or undo the half-marked pair before suggesting.");
+  const token=dialogToken;
+  const result=await api(tileUrl()+"/registrations/"+photoId+"/assist",{
+    method:"POST",body:{pairs:complete.map(pair=>({base:pair.base,side:pair.side}))},
+  });
+  if (token!==dialogToken) return;
+  assistSuggestion=result;
+  syncAssistSubmit();
+  const checks=result.checks;
+  const stats=[
+    stat("Point pairs",checks.pair_count),
+    stat("Worst residual",checks.max_residual_px+" px"),
+    stat("Side photo support",checks.side_support_percent+"%"),
+    stat("Common support",checks.common_support_percent+"%"),
+    stat("Extrapolated area",checks.extrapolated_percent+"%"),
+  ].join("");
+  const distinct=checks.distinctiveness
+    ? stat("Repeat-pattern gap",checks.distinctiveness.median_second_best_gap)
+    : "";
+  q("#assist-result").innerHTML=`
+    <figure class="stage">${img(result.evidence_png,"Registration evidence map")}</figure>
+    <div class="metrics">${stats}${distinct}</div>
+    ${result.warnings.length?result.warnings.map(text=>`<p class="notice warn">${e(text)}</p>`).join("")
+      :'<p class="notice">The pairs agree on one geometry and the overlap has distinctive image content.</p>'}
+    <p class="soft">Amber areas are extrapolated beyond the marked pairs; grey areas are not covered by the side photo. The amber dots are your base-photo marks; blue circles show where each side point lands after the proposed warp and should overlap its matching amber dot.</p>
+    <div class="actions">${btn("Use suggested corners","assist-apply","tiny primary","check")}${btn("Re-run after edits","assist-run","tiny secondary",null,`data-id="${photoId}"`)}</div>`;
+  toast("Alignment suggestion ready. Review the evidence map before saving.");
 }
 
 function regionForm(region) {
@@ -698,6 +794,31 @@ async function doAction(name,target) {
     }),
     "draw-clear":()=>{drawPoints=[];drawUpdate();},
     "draw-undo":()=>{drawPoints.pop();drawUpdate();},
+    "assist-open":()=>assistForm(),
+    "assist-pick-base":()=>{assistPane="base";highlightAssistPane();},
+    "assist-pick-side":()=>{assistPane="side";highlightAssistPane();},
+    "assist-clear":()=>{assistPairs=[];assistSuggestion=null;q("#assist-result").innerHTML="";pairDrawUpdate();syncAssistSubmit();},
+    "assist-undo":()=>{
+      const last=assistPairs.at(-1);
+      if (!last) return;
+      if (last.base[0]===null||last.side[0]===null) assistPairs.pop();
+      else if (assistPairs.length>1) assistPairs.pop();
+      else assistPairs=[];
+      assistSuggestion=null;q("#assist-result").innerHTML="";pairDrawUpdate();syncAssistSubmit();
+    },
+    "assist-run":()=>runAssist(id),
+    "assist-apply":()=>{
+      if (!assistSuggestion) throw Error("Generate a suggestion first.");
+      drawPoints=assistSuggestion.corners.map(point=>[...point]);
+      geometryForm("registration");
+      drawUpdate();
+      toast("Suggested corners loaded. Drag-check them or preview before saving.");
+    },
+    "assist-edit-corners":()=>{
+      drawPoints=(assistSuggestion?.corners||[]).map(point=>[...point]);
+      geometryForm("registration");
+      drawUpdate();
+    },
     neutral:neutralForm,
     "neutral-clear":()=>patchTile("/calibration","DELETE",{},"Neutral-card balance cleared."),
     "reference-add":refForm,
@@ -771,6 +892,29 @@ async function runAction(target) {
 document.addEventListener("click",event=>{
   const target=event.target.closest("[data-do]");
   if (target) {void runAction(target);return;}
+  const pairStage=event.target.closest('[id^="pair-stage-"]');
+  if (pairStage && assistPairs.length<12) {
+    const pane=pairStage.id==="pair-stage-base"?"base":"side";
+    assistPane=pane;
+    highlightAssistPane();
+    const rect=pairStage.getBoundingClientRect();
+    const u=Math.min(1,Math.max(0,(event.clientX-rect.left)/rect.width));
+    const v=Math.min(1,Math.max(0,(event.clientY-rect.top)/rect.height));
+    const point=[Number(u.toFixed(6)),Number(v.toFixed(6))];
+    if (pane==="base") {
+      const open=assistPairs.find(pair=>pair.base[0]===null);
+      if (open) open.base=point;
+      else if (assistPairs.length<12) assistPairs.push({base:point,side:[null,null]});
+    } else {
+      const open=assistPairs.find(pair=>pair.side[0]===null);
+      if (open) open.side=point;
+      else if (assistPairs.length<12) assistPairs.push({base:[null,null],side:point});
+    }
+    assistSuggestion=null;
+    pairDrawUpdate();
+    syncAssistSubmit();
+    return;
+  }
   const drawing=event.target.closest("#draw-stage");
   if (drawing && drawPoints.length<drawLimit) {
     const rect=drawing.getBoundingClientRect();
