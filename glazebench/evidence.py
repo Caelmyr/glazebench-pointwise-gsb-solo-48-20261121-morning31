@@ -96,8 +96,40 @@ def result_metrics_table(record):
 
 
 def study_table(report):
+    stream = StringIO(newline="")
+    out = csv.writer(stream, lineterminator="\r\n")
     columns = ("tile_name", "tile_id", "group", "measurement_id", "version", "value", "support")
-    return csv_lines(columns, ([item[key] for key in columns] for item in report["rows"]))
+    out.writerow(columns)
+    for item in report["rows"]:
+        out.writerow([csv_cell(item[key]) for key in columns])
+
+    paired = report.get("paired") or {}
+    if paired.get("available"):
+        out.writerow([])
+        out.writerow([
+            "Paired comparison",
+            paired.get("baseline_run", ""),
+            "to",
+            paired.get("comparison_run", ""),
+            "one mean per body+glaze recipe",
+        ])
+        pair_columns = (
+            "recipe", "body", "glaze", "baseline_mean", "comparison_mean", "change",
+            "baseline_n", "comparison_n", "baseline_measurement_ids", "comparison_measurement_ids",
+        )
+        out.writerow(pair_columns)
+        for pair in paired["pairs"]:
+            out.writerow([csv_cell(pair[key]) for key in pair_columns])
+        if paired.get("excluded_groups"):
+            out.writerow([])
+            out.writerow(["Recipes present in only one firing run (not paired)"])
+            excluded_columns = (
+                "recipe", "body", "glaze", "available_run", "missing_run", "n", "measurement_ids",
+            )
+            out.writerow(excluded_columns)
+            for group in paired["excluded_groups"]:
+                out.writerow([csv_cell(group[key]) for key in excluded_columns])
+    return stream.getvalue().encode("utf-8-sig")
 
 
 def source_index(tile, results):

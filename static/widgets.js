@@ -95,3 +95,8 @@ export function table(columns,rows) {
   return `<div class="table-wrap"><table><thead><tr>${columns.map(value=>`<th>${e(value)}</th>`).join("")}</tr></thead><tbody>
     ${rows.map(row=>`<tr>${row.map(value=>`<td>${e(value ?? "—")}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
 }
+
+export function htmlTable(columns,rows) {
+  return `<div class="table-wrap"><table><thead><tr>${columns.map(value=>`<th>${e(value)}</th>`).join("")}</tr></thead><tbody>
+    ${rows.map(row=>`<tr>${row.map(value=>`<td>${value ?? "—"}</td>`).join("")}</tr>`).join("")}</tbody></table></div>`;
+}

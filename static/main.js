@@ -1,4 +1,4 @@
-import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table} from "./widgets.js";
+import {q,qa,icon,e,btn,link,badge,empty,option,img,field,textField,selectField,numField,checkField,areaField,api,request,date,n,percent,plot,stat,table,htmlTable} from "./widgets.js";
 import {resultCard,specimenResultRows} from "./results.js";
 
 const state={page:"collection",tile:null,tiles:[],tab:"captures",tool:"color",capture:null,viewer:"raw",layer:"overlay",result:null,config:null,results:[],refs:[],packets:[],study:null,studies:[],query:""};
@@ -227,12 +227,69 @@ function libraryPage() {
     <div class="actions">${link("Open specimen","#tile:"+ref.tile_id,"secondary","tiles")}${btn("Retire","reference-retire","ghost",null,`data-id="${ref.id}"`)}</div></article>`).join("")}</div>`:empty("Approve a visual reference from a specimen with a registered capture.",link("Open specimens","#collection","primary","tiles"))}`;
 }
 
+function signedNumber(value,digits=3) {
+  if (value==null) return "—";
+  const sign=value>0?"+":"";
+  return sign+n(value,digits);
+}
+
+function specimenChips(names, ids) {
+  return names.map((name,index)=>
+    `<button type="button" class="chip" data-do="study-result" data-id="${e(ids[index])}">${e(name)}</button>`).join(" ");
+}
+
+function pairedPanel(report) {
+  const paired=report.paired;
+  if (!paired) return "";
+  if (!paired.available) {
+    return `<section class="card stack paired-block"><h3>Paired firing comparison</h3>
+      <p class="notice">${e(paired.reason)}</p></section>`;
+  }
+  const summary=paired.summary;
+  const directionText=`${summary.increases} up · ${summary.decreases} down${summary.unchanged?` · ${summary.unchanged} unchanged`:""}`;
+  const interval=summary.confidence_interval
+    ? `${signedNumber(summary.confidence_interval[0])} to ${signedNumber(summary.confidence_interval[1])}`
+    : "—";
+  return `<section class="card stack paired-block"><h3>Paired firing comparison</h3>
+    <p class="soft">${e(paired.pairing_basis)} Each recipe contributes one mean per run, so groups with extra tiles do not get extra weight.</p>
+    <p><strong>${e(paired.baseline_run)}</strong> → <strong>${e(paired.comparison_run)}</strong> · ${summary.pair_count} matched recipe group${summary.pair_count===1?"":"s"}</p>
+    <div class="metrics">
+      ${stat("Mean change · "+report.metric_label,signedNumber(summary.mean_change,4))}
+      ${stat("Mean absolute change",n(summary.mean_absolute_change,4))}
+      ${stat("Change spread (SD)",n(summary.change_spread,4))}
+      ${stat("95% interval (t)",interval)}
+      ${stat("Recipe directions",directionText)}
+    </div>
+    ${htmlTable(
+      ["Recipe (body · glaze)",`${paired.baseline_run} mean · n`,`${paired.comparison_run} mean · n`,"Change","Specimens used"],
+      paired.pairs.map(item=>[
+        e(item.recipe),
+        `${n(item.baseline_mean,4)} · n=${item.baseline_n}`,
+        `${n(item.comparison_mean,4)} · n=${item.comparison_n}`,
+        signedNumber(item.change,4),
+        `<span class="chip-set">${specimenChips(item.baseline_tile_names,item.baseline_measurement_ids)} ${specimenChips(item.comparison_tile_names,item.comparison_measurement_ids)}</span>`,
+      ]),
+    )}
+    ${paired.excluded_groups.length?`<details><summary>Recipes not paired (${paired.excluded_groups.length}) — present in only one firing run</summary>
+      ${htmlTable(
+        ["Recipe","Present in","Missing from","Tiles","Specimens"],
+        paired.excluded_groups.map(item=>[
+          e(item.recipe),e(item.available_run),e(item.missing_run),`n=${item.n}`,
+          `<span class="chip-set">${specimenChips(item.tile_names,item.measurement_ids)}</span>`,
+        ]),
+      )}</details>`:""}
+    ${paired.caveats.map(item=>`<p class="notice warn">${e(item)}</p>`).join("")}
+  </section>`;
+}
+
 function studyPanel() {
   const report=state.study;
   if (!report) return empty("Select specimens with saved measurements, then build a study.");
   const base=`/api/studies/${report.id}`;
   return `<section class="card stack"><h3>${e(report.title)}</h3><p>${e(report.comparison_note)}</p>
+    <h4 class="section-label">Group averages · grouped by ${e(report.group_by)}</h4>
     <div class="metrics">${report.groups.map(item=>stat(`${item.group} · n=${item.n}`,n(item.mean,4))).join("")}</div>
+    ${pairedPanel(report)}
     ${report.pictures.map((_,index)=>img(base+`/sheet/${index+1}`,`Firing comparison sheet ${index+1}`)).join("")}
     ${table(["Specimen","Group",report.metric_label,"Support"],report.rows.map(item=>[item.tile_name,item.group,n(item.value,4),percent(item.support)]))}
     ${report.caveats.map(item=>`<p class="notice">${e(item)}</p>`).join("")}<div class="actions">${link("CSV",base+"/data.csv","secondary","download")}${link("Study JSON",base+"/data.json","secondary","download")}</div></section>`;
@@ -611,7 +668,7 @@ async function studyForm() {
     <div class="form-columns">${selectField("Measurement kind","study_kind",kinds)}
     ${selectField("Group by","group_by",["firing","glaze","body","batch"].map(key=>option(key,key,"firing")).join(""))}</div>
     ${selectField("Metric","metric","")}
-    <p class="soft">Choose one run per tile.</p><div class="divider-list scroll-list" id="study-results"></div>`,
+    <p class="soft">Choose one run per tile. With two firing runs, the study adds a paired comparison of recipes (same body and glaze) seen in both runs.</p><div class="divider-list scroll-list" id="study-results"></div>`,
     "Save study",async data=>{
       const result=await api("/api/studies",{method:"POST",body:{
         title:data.get("title"),group_by:data.get("group_by"),metric:data.get("metric"),result_ids:data.getAll("study_result"),
@@ -743,6 +800,21 @@ async function doAction(name,target) {
     pin:pinForm,
     "study-add":studyForm,
     "study-open":()=>{state.study=state.studies.find(item=>item.id===id);render();},
+    "study-result":async ()=>{
+      const record=await api("/api/results/"+id);
+      const provenance=record.provenance.specimen;
+      const capture=record.provenance.photo;
+      modal(`${provenance.name} · ${record.label}`,
+        `<figure class="stage">${img(`/api/results/${record.id}/image/overlay`,"Measurement overlay")}</figure>
+         <div class="divider-list">
+           <p><strong>Body · glaze:</strong> ${e(provenance.body||"—")} · ${e(provenance.glaze||"—")}</p>
+           <p><strong>Firing run:</strong> ${e(provenance.firing||"—")}</p>
+           <p><strong>Capture:</strong> ${e(capture.display_name)} · ${e(capture.role)}</p>
+           <p><strong>Measurement ID:</strong> <code>${e(record.id)}</code></p>
+         </div>
+         <div class="actions">${link("Open specimen","#tile:"+provenance.id,"secondary","tiles")}</div>`,
+        null,null,true);
+    },
     close:commitModal,
   };
   if (functions[name]) await functions[name]();
