@@ -8,6 +8,7 @@ import re
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from .art import comparison_sheet, load_artifact_picture, stored_preview
+from .excerpt import build_excerpt, crop_rectangle
 from .model import InputError, dictionary, enumeration, flag, string, tags, unique_ids
 from .store import document
 
@@ -125,7 +126,10 @@ def pinned_fields(store, request):
     notes = string(data.get("notes"), "Evidence notes", maximum=2400, required=False)
     view = enumeration(data.get("view", "overlay"), ("overlay", "source"), "Export image")
     include_sources = flag(data.get("include_sources", False), "Include original uploads")
-    return data, targets, title, notes, view, include_sources
+    rect = crop_rectangle(data)
+    if rect is not None and include_sources:
+        raise InputError("A partial evidence packet cannot carry original uploads; they show the whole capture.")
+    return data, targets, title, notes, view, include_sources, rect
 
 
 def image_card(store, result, view):
@@ -152,10 +156,13 @@ def evidence_sheets(store, title, records, view):
 
 
 def create_evidence(store, identifier, payload):
-    data, targets, title, notes, view, include_sources = pinned_fields(store, payload)
+    data, targets, title, notes, view, include_sources, rect = pinned_fields(store, payload)
     tile, records = store.sources_for_evidence(identifier, targets)
     if any(result["tile_id"] != tile["id"] for result in records):
         raise InputError("An evidence packet can contain measurements from its own specimen only.")
+    excerpt = None
+    if rect is not None:
+        excerpt, records = build_excerpt(store, records, rect)
     originals = source_index(tile, records) if include_sources else []
     byte_total = sum(store.blobs.require(item["digest"]).stat().st_size for item in originals)
     if byte_total > SOURCE_TOTAL_BYTES:
@@ -169,6 +176,7 @@ def create_evidence(store, identifier, payload):
         "tile_version_at_pin": tile["version"],
         "synthetic": tile["synthetic"],
         "view": view,
+        "excerpt": excerpt,
         "originals": originals,
         "original_bytes": byte_total,
         "measurements": records,
@@ -178,6 +186,65 @@ def create_evidence(store, identifier, payload):
 
 def inline_picture(blobstore, digest):
     return "data:image/png;base64," + base64.b64encode(blobstore.get(digest)).decode("ascii")
+
+
+def excerpt_gap_lines(summary):
+    lines = []
+    for view, report in summary.get("gaps", {}).items():
+        edges = ", ".join(f"{name} {value:g}%" for name, value in report["edge_gap_percent"].items() if value > 0)
+        lines.append(
+            f"<li>{escape(view)} image: {report['gap_percent']:g}% of the excerpt was never photographed"
+            + (f"; unsupported pixels on {escape(edges)}</li>" if edges else "</li>")
+        )
+    return "".join(lines)
+
+
+def excerpt_notes(summary):
+    cuts = summary["truncated_annotations"]
+    lines = [
+        "<li>The numeric table below is the original pinned measurement over its full region; "
+        "only the exported images and this summary are limited to the rectangle.</li>"
+    ]
+    if cuts.get("markers_truncated_count"):
+        keys = ", ".join(cuts["markers_truncated"])
+        extra = "" if cuts["markers_truncated_count"] <= len(cuts["markers_truncated"]) else " …"
+        lines.append(
+            f"<li>{cuts['markers_truncated_count']} marked observation(s) cross the rectangle edge and are cut off"
+            f" ({escape(keys)}{extra}). They are truncated parts of the original measurement, not new findings.</li>"
+        )
+    if cuts.get("markers_outside_count"):
+        lines.append(f"<li>{cuts['markers_outside_count']} marked observation(s) lie entirely outside the rectangle.</li>")
+    if cuts.get("profile_line_cut"):
+        lines.append("<li>The line-scan endpoints extend outside the rectangle; the visible band is only a segment of the pinned line.</li>")
+    lines.append(excerpt_gap_lines(summary))
+    return "".join(lines)
+
+
+def excerpt_banner(entry):
+    excerpt = entry.get("excerpt")
+    if not excerpt:
+        return ""
+    left, top, right, bottom = excerpt["rect"]
+    geometry = "".join(
+        "<li>" + escape(record["provenance"]["photo"]["display_name"])
+        + " · plane-to-capture: "
+        + escape(", ".join(f"{value:.5f}" for value in record["provenance"]["photo"]["plane_to_capture"]))
+        + "</li>"
+        for record in entry["measurements"]
+    )
+    return (
+        '<div class="excerpt-banner"><h2>Partial evidence excerpt</h2>'
+        "<p>This packet contains only the rectangle pinned on the registered specimen plane. "
+        "The amber frame marks a cropped excerpt of the pinned measurement; it is not a new or complete measurement. "
+        "Photos and annotations outside the rectangle were withheld and original uploads are not included.</p>"
+        f"<p>Rectangle in plane coordinates (left, top, right, bottom): "
+        f"{left:.4f}, {top:.4f}, {right:.4f}, {bottom:.4f} · "
+        f"plane at pin time: {excerpt['plane_size'][0]} × {excerpt['plane_size'][1]} px</p>"
+        f"<details><summary>Capture geometry to re-locate this rectangle on the original tile photo</summary>"
+        f"<ul>{geometry}</ul>"
+        "<p>Each homography maps normalized registered-plane points into its capture frame. "
+        "Apply it to the rectangle coordinates to find this excerpt at the pinned specimen position.</p></details></div>"
+    )
 
 
 def measurement_article(record, sheet):
@@ -195,10 +262,11 @@ def measurement_article(record, sheet):
     summaries = "".join(rows)
     figures = ""
     if sheet:
-        figures = f'<img alt="{title} from {location}" src="{sheet}">'
+        figures = f'<img alt="{title} from {location}" src="{sheet}" class="{"excerpt-image" if record.get("excerpt") else ""}">'
+    caveats = f'<div class="excerpt-notes"><strong>Excerpt limitations</strong><ul>{excerpt_notes(record["excerpt"])}</ul></div>' if record.get("excerpt") else ""
     return (
         f'<article><h2>{title}</h2><p>{location} · specimen revision {rev}</p>'
-        f'{figures}<table>{summaries}</table></article>'
+        f'{figures}{caveats}<table>{summaries}</table></article>'
     )
 
 
@@ -229,7 +297,12 @@ article{{border-top:1px solid #c9c5b8;padding:22px 0;break-inside:avoid}}
 img{{max-width:100%;max-height:520px;background:#242b2b}}
 table{{border-collapse:collapse;margin:1rem 0;width:100%}}
 td,th{{border-bottom:1px solid #ccc;text-align:left;padding:0.45rem 0;vertical-align:top}}
-</style></head><body><h1>{title}</h1><p>{name} · {date}</p>{badge}<p>{notes}</p>{body}
+.excerpt-banner{{border:2px solid #f68b60;background:#fdf0e6;padding:16px 20px;margin:18px 0}}
+.excerpt-banner h2{{margin:0 0 8px;color:#8a3f22}}
+.excerpt-image{{background:repeating-conic-gradient(#3a4245 0 25%,#242b2b 0 50%) 0 0/28px 28px}}
+.excerpt-notes{{background:#f4e6c8;border-left:4px solid #f68b60;padding:10px 16px;margin:12px 0}}
+.excerpt-notes ul{{margin:8px 0 0;padding-left:20px}}
+</style></head><body><h1>{title}</h1><p>{name} · {date}</p>{badge}{excerpt_banner(entry)}<p>{notes}</p>{body}
 <footer>GlazeBench · Capture-relative visual evidence</footer></body></html>""".encode("utf8")
 
 
@@ -289,4 +362,9 @@ def summarize_result(record):
 
 def summarize_evidence(record):
     keys = ("title", "notes", "id", "tags", "created_at", "tile_id", "tile_name", "tile_version_at_pin", "view")
-    return {**{key: record[key] for key in keys}, "count": len(record["measurements"]), "sheet_count": len(record["sheets"])}
+    return {
+        **{key: record[key] for key in keys},
+        "excerpt": record.get("excerpt"),
+        "count": len(record["measurements"]),
+        "sheet_count": len(record["sheets"]),
+    }

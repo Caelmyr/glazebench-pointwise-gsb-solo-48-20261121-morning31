@@ -7,6 +7,7 @@ from zipfile import BadZipFile, ZipFile
 from PIL import Image, UnidentifiedImageError
 
 from .evidence import result_entry_names
+from .excerpt import imported_excerpt
 from .model import ANALYSIS_LABELS, InputError, digest_identity, identity, integer, string
 from .photos import bounded_preview, png_bytes
 
@@ -178,12 +179,19 @@ def trusted_provenance(record, expected_id):
     photo = provenance.get("photo")
     if not isinstance(photo, dict):
         raise InputError("A measurement lacks capture provenance.")
+    transform = photo.get("plane_to_capture")
+    if transform is not None and (
+        not isinstance(transform, list) or len(transform) != 9
+        or not all(isinstance(value, (int, float)) for value in transform)
+    ):
+        raise InputError("A measurement carries an unusable plane-to-capture geometry.")
     return {
         "name": string(photo.get("display_name"), "Capture name", maximum=140),
         "role": string(photo.get("role"), "Capture role", maximum=32),
         "source_digest": digest_identity(photo.get("original_digest"), "Original photograph digest"),
         "working_digest": digest_identity(photo.get("working_digest"), "Working image digest"),
         "source_version": integer(record.get("source_version"), "Source revision", lower=1, upper=2_000_000_000),
+        "plane_to_capture": [float(value) for value in transform] if transform is not None else None,
     }
 
 
@@ -212,14 +220,17 @@ def import_measurements(store, archive, names, records, specimen):
             data = member_digest(archive, names, stem + f"-{layer}.png", digest)
             images[layer] = store.blobs.put(decoded_panel(data, f"{label} {layer}"))
         provenance = trusted_provenance(record, specimen)
-        collected.append({
+        entry = {
             "id": identifier,
             "label": label,
             "kind": kind,
             "source_version": provenance["source_version"],
             "capture": provenance,
             "pictures": images,
-        })
+        }
+        if "excerpt" in record:
+            entry["excerpt"] = record["excerpt"]
+        collected.append(entry)
     return collected
 
 
@@ -241,8 +252,12 @@ def viewable_packet(store, archive):
     tile_id = identity(manifest.get("tile_id"), "Specimen ID")
     caption = string(manifest.get("title"), "Evidence title", maximum=115)
     notes = string(manifest.get("notes"), "Evidence notes", maximum=2400, required=False)
+    partial = manifest.get("excerpt") is not None
+    if partial and manifest.get("originals"):
+        raise InputError("A partial evidence packet cannot include original uploads.")
     original_images = read_originals(archive, entries, manifest.get("originals", []))
     measurements = import_measurements(store, archive, entries, manifest.get("measurements"), tile_id)
+    excerpt = imported_excerpt(manifest, measurements)
     sheets = import_sheets(store, archive, entries, manifest.get("sheets"))
     revision = integer(manifest.get("tile_version_at_pin"), "Specimen revision", lower=1, upper=2_000_000_000)
     return {
@@ -252,6 +267,7 @@ def viewable_packet(store, archive):
         "notes": notes,
         "specimen": string(manifest.get("tile_name"), "Specimen name"),
         "specimen_revision": revision,
+        "excerpt": excerpt,
         "originals": original_images,
         "measurements": measurements,
         "sheets": sheets,

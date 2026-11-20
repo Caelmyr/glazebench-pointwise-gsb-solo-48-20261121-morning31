@@ -20,6 +20,7 @@ let travel=0;
 let dialogToken=0;
 let drawPoints=[];
 let drawLimit=0;
+let cropRect=null;
 let currentForm=null;
 let reviewUploads=[];
 
@@ -162,7 +163,7 @@ function measurements() {
 
 function evidencePage() {
   return `<div class="grid-detail"><section class="card"><div class="title-row"><h3>Pinned evidence</h3>${btn("Pin evidence","pin","primary","archive")}</div>
-    ${state.packets.length?`<div class="divider-list">${state.packets.map(item=>`<div class="row"><div class="grow"><strong class="row-title">${e(item.title)}</strong><small>${item.count} measurements · ${e(date(item.created_at))}</small></div>
+    ${state.packets.length?`<div class="divider-list">${state.packets.map(item=>`<div class="row"><div class="grow"><strong class="row-title">${e(item.title)}</strong>${item.excerpt?badge("Partial excerpt","partial"):""}<br><small>${item.count} measurements · ${e(date(item.created_at))}${item.excerpt?" · limited to pinned rectangle":""}</small></div>
     ${link("View report",`/api/evidence/${item.id}/inspection.html`,"tiny secondary","book")}${link("ZIP",`/api/evidence/${item.id}/archive.zip`,"tiny secondary","download")}</div>`).join("")}</div>`:empty("Pin a packet from saved measurements to keep a dated copy of the observations.")}</section>
     <section class="card"><h3>Specimen activity</h3><div class="divider-list scroll-list">${(state.activity||[]).map(row=>`<div class="row"><div class="grow"><strong>${e(row.message)}</strong><br><small>${e(date(row.recorded_at))}</small></div></div>`).join("")}</div></section></div>`;
 }
@@ -191,6 +192,49 @@ function geometryPage() {
       <section class="card"><h3>Saved geometry</h3><div class="divider-list">${results.map(item=>`<div class="row"><div class="grow">${e(item.title)}<br><small>${e(item.mode)} · revision ${item.specimen.version}</small></div>${btn("Open","metrology-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No saved outlines.</p>"}</div></section></div></div>`;
 }
 
+function receivedExcerptPanel(chosen,path) {
+  const excerpt=chosen.excerpt;
+  if (!excerpt) return "";
+  const [left,top,right,bottom]=excerpt.rect;
+  const measurementCards=chosen.measurements.map(item=>{
+    const summary=item.excerpt;
+    if (!summary) return "";
+    const gap=summary.gaps.overlay||summary.gaps.source||Object.values(summary.gaps)[0];
+    const gapEdges=(gap?.gap_edges||[]).map(edge=>e(edge)).join(", ");
+    const cuts=summary.truncated_annotations;
+    const cutLines=[];
+    if (cuts.markers_truncated_count) cutLines.push(`${cuts.markers_truncated_count} marked observation(s) cut by the rectangle edge: ${e(cuts.markers_truncated.join(", "))}`);
+    if (cuts.markers_outside_count) cutLines.push(`${cuts.markers_outside_count} marking(s) entirely outside the rectangle`);
+    if (cuts.profile_line_cut) cutLines.push("The line scan continues outside the rectangle; only a segment is shown");
+    const layers=["overlay",...(item.pictures.source?["source"]:[]),...(item.pictures.paired?["paired"]:[])];
+    return `<article class="excerpt-measurement">
+      <h4>${e(item.label)}</h4>
+      <div class="actions">${layers.map((layer,index)=>btn(layer==="overlay"?"Map":"Source plane","received-layer",index===0?"tiny primary":"tiny secondary",null,`data-received-id="${chosen.id}" data-measurement-id="${item.id}" data-layer="${layer}"`)).join("")}</div>
+      <figure class="stage"><img class="excerpt-img" src="${path}/measurement/${item.id}/overlay" alt="${e(item.label)} cropped excerpt"></figure>
+      <p class="soft">Excerpt gap: ${n(gap?.gap_percent)}% unsupported${gapEdges?` · blank reaches edge(s): ${gapEdges}`:""}</p>
+      ${cutLines.length?`<ul class="excerpt-cut-list">${cutLines.map(line=>`<li>${line}</li>`).join("")}</ul>`:""}
+    </article>`;
+  }).join("");
+  return `<section class="card stack excerpt-panel">
+    <div class="title-row"><h3>Partial evidence excerpt</h3>${badge("Limited rectangle","partial")}</div>
+    <p class="notice">The amber-framed images are cropped excerpts of the pinned measurements, not new complete measurements. Photos and annotations outside the rectangle were withheld; original uploads are not part of this packet.</p>
+    <div class="metrics">
+      ${stat("Plane at pin",excerpt.plane_size.join(" × ")+" px")}
+      ${stat("Rect left, top",n(left,3)+", "+n(top,3))}
+      ${stat("Rect right, bottom",n(right,3)+", "+n(bottom,3))}
+      ${stat("Excerpt pixels",excerpt.pixel_box.slice(2).map((v,i)=>v-excerpt.pixel_box[i]).join(" × ")+" px")}
+    </div>
+    <details><summary>Capture geometry for re-checking this rectangle on the original tile</summary>
+      ${table(["Measurement","Capture","Plane-to-capture homography"],chosen.measurements.map(item=>[
+        item.label,item.capture.name,
+        item.capture.plane_to_capture?item.capture.plane_to_capture.map(value=>n(value,5)).join(", "):"—",
+      ]))}
+      <p class="soft">The homography maps normalized registered-plane points to the capture frame; apply it to the rectangle coordinates above to find this excerpt on the original photo position.</p>
+    </details>
+    ${measurementCards}
+  </section>`;
+}
+
 function receivedPage() {
   const items=state.received||[];
   const chosen=state.receivedActive;
@@ -198,15 +242,16 @@ function receivedPage() {
   let view=empty("Open an inspection ZIP to check its declared images and specimen details.",actions);
   if (chosen) {
     const path=`/api/received/${chosen.id}`;
-    view=`<section class="card stack"><div class="title-row"><h3>${e(chosen.title)}</h3>${badge("Digests match","ready")}</div>
+    view=`<section class="card stack"><div class="title-row"><h3>${e(chosen.title)}</h3>${badge("Digests match","ready")}${chosen.excerpt?badge("Partial excerpt","partial"):""}</div>
       <p>${e(chosen.specimen)} · revision ${chosen.specimen_revision}</p>
       ${chosen.notes?`<p class="notice">${e(chosen.notes)}</p>`:""}
       ${chosen.sheets.map((item,index)=>img(path+`/sheet/${index+1}`,`Received evidence sheet ${index+1}`)).join("")}
       ${table(["Measurement","Source capture","Version"],chosen.measurements.map(item=>[item.label,item.capture.name,item.source_version]))}
-      <p class="soft">Archive matches its included digests. Preserve sender and capture records when sharing it.</p></section>`;
+      <p class="soft">Archive matches its included digests. Preserve sender and capture records when sharing it.</p></section>
+      ${receivedExcerptPanel(chosen,path)}`;
   }
   return `<header class="page-head"><div><h1>Received evidence</h1><p>Open a received GlazeBench inspection packet and verify its declared images.</p></div>${actions}</header>
-    <div class="grid-detail">${view}<section class="card"><h3>Received packets</h3><div class="divider-list">${items.map(item=>`<div class="row"><div class="grow">${e(item.title)}<br><small>${e(date(item.imported_at))}</small></div>${btn("Open","received-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No received packets.</p>"}</div></section></div>`;
+    <div class="grid-detail">${view}<section class="card"><h3>Received packets</h3><div class="divider-list">${items.map(item=>`<div class="row"><div class="grow">${e(item.title)}${item.excerpt?badge("Partial","partial"):""}<br><small>${e(date(item.imported_at))}</small></div>${btn("Open","received-open","tiny secondary",null,`data-id="${item.id}"`)}</div>`).join("")||"<p class='soft'>No received packets.</p>"}</div></section></div>`;
 }
 
 function tilePage() {
@@ -570,27 +615,81 @@ function qualityForm() {
     });
 }
 
+function cropStage(base) {
+  return `<div class="stage"><div class="capture-drawing crop-drawing" id="crop-stage">${img(base,"Specimen plane for excerpt rectangle")}
+    <svg viewBox="0 0 1000 1000" preserveAspectRatio="none" aria-hidden="true" id="crop-overlay"></svg></div></div>`;
+}
+
+function cropUpdate() {
+  const artist=q("#crop-overlay");
+  if (!artist) return;
+  if (!cropRect) {artist.innerHTML="";return;}
+  const [left,top,right,bottom]=cropRect.map(value=>value*1000);
+  artist.innerHTML=`<rect class="crop-line" x="${left}" y="${top}" width="${right-left}" height="${bottom-top}"></rect>
+    <rect class="crop-mask" x="0" y="0" width="1000" height="${top}"></rect>
+    <rect class="crop-mask" x="0" y="${bottom}" width="1000" height="${1000-bottom}"></rect>
+    <rect class="crop-mask" x="0" y="${top}" width="${left}" height="${bottom-top}"></rect>
+    <rect class="crop-mask" x="${right}" y="${top}" width="${1000-right}" height="${bottom-top}"></rect>`;
+  for (const [name,value] of [["left",cropRect[0]],["top",cropRect[1]],["right",cropRect[2]],["bottom",cropRect[3]]]) {
+    const input=q("#field-crop-"+name);
+    if (input) input.value=Number(value).toFixed(3);
+  }
+  const span=q("#crop-span");
+  if (span) span.textContent=`Excerpt covers ${n((cropRect[2]-cropRect[0])*100,1)}% × ${n((cropRect[3]-cropRect[1])*100,1)}% of the plane`;
+}
+
+function readCropInputs() {
+  const values=["left","top","right","bottom"].map(name=>Number(q("#field-crop-"+name).value));
+  if (values.some(value=>!Number.isFinite(value)||value<0||value>1)) throw Error("Excerpt coordinates must be between 0 and 1.");
+  const [left,top,right,bottom]=values;
+  if (right<=left||bottom<=top) throw Error("The excerpt rectangle must have a positive width and height.");
+  if (right-left<0.02||bottom-top<0.02) throw Error("The excerpt rectangle must cover at least 2% of each plane edge.");
+  return values.map(value=>Number(value.toFixed(6)));
+}
+
 function pinForm() {
   if (!state.results.length) throw Error("Run a measurement before pinning evidence.");
+  const base=state.tile.photos.find(item=>item.registration_state==="base");
   const rows=state.results.map(item=>`<label class="row field check"><input type="checkbox" name="result_id" value="${item.id}"${state.result?.id===item.id?" checked":""}>
     <span class="grow">${e(item.label)} · revision ${item.source_version}</span></label>`).join("");
+  const cropControls=`<details id="crop-details" class="crop-details"><summary>Send only one rectangle: build a partial evidence packet</summary>
+    ${base?`
+    <p class="notice">Drag across the registered plane to frame the excerpt, or enter coordinates directly. The pinned images are cropped to this rectangle; photos and markings outside it are withheld and original uploads are disabled.</p>
+    ${cropStage(base.registered_url)}
+    <p class="soft" id="crop-span"></p>
+    <div class="form-columns">
+      ${numField("Rect left","crop-left",0.1,0,1,0.001)}${numField("Rect top","crop-top",0.1,0,1,0.001)}
+      ${numField("Rect right","crop-right",0.9,0,1,0.001)}${numField("Rect bottom","crop-bottom",0.9,0,1,0.001)}
+    </div>
+    <div class="actions">${btn("Use coordinates","crop-apply","tiny secondary")}${btn("Clear rectangle","crop-clear","tiny ghost")}</div>`
+    :'<p class="soft">Set a base capture and mark the tile plane before drawing an excerpt rectangle.</p>'}
+  </details>`;
   modal("Pin inspection evidence",`
     ${textField("Evidence title","title",state.tile.name+" inspection",'required maxlength="115"')}
     <div class="divider-list scroll-list">${rows}</div>${areaField("Notes","notes","",2400)}
     ${textField("Tags, comma separated","tags")}
     ${selectField("Use image layer","view",option("overlay","Measurement maps","overlay")+option("source","Registered source"))}
-    ${checkField("Include original uploads in ZIP","include_sources",false)}`,
+    ${checkField("Include original uploads in ZIP","include_sources",false)}
+    ${checkField("Limit this packet to the excerpt rectangle below","partial",false)}
+    ${cropControls}`,
     "Pin evidence",async data=>{
-      await api(tileUrl()+"/evidence",{method:"POST",body:{
+      const payload={
         title:data.get("title"),result_ids:data.getAll("result_id"),notes:data.get("notes"),view:data.get("view"),
         tags:String(data.get("tags")).split(",").map(value=>value.trim()).filter(Boolean),include_sources:data.has("include_sources"),
-      }});
+      };
+      if (data.has("partial")) {
+        if (!base) throw Error("Set a base capture and mark the tile plane before building a partial packet.");
+        payload.crop=cropRect&&cropRect.length===4?cropRect:readCropInputs();
+      }
+      await api(tileUrl()+"/evidence",{method:"POST",body:payload});
       await gatherTile();
       state.tab="evidence";
       commitModal();
       toast("Inspection evidence pinned.");
       render();
-    });
+    },true);
+  cropRect=null;
+  cropStageEl=null;
 }
 
 function studyOptions(kind) {
@@ -717,6 +816,14 @@ async function doAction(name,target) {
     "metrology-open":()=>{state.metrologyActive=state.metrology.find(item=>item.id===id);render();},
     "receive-add":importEvidence,
     "received-open":()=>{state.receivedActive=state.received.find(item=>item.id===id);render();},
+    "received-layer":()=>{
+      const {receivedId,measurementId,layer}=target.dataset;
+      const figure=target.closest(".excerpt-measurement").querySelector(".excerpt-img");
+      figure.src=`/api/received/${receivedId}/measurement/${measurementId}/${layer}`;
+      target.parentElement.querySelectorAll("[data-do=received-layer]").forEach(button=>{
+        button.className="button tiny "+(button===target?"primary":"secondary");
+      });
+    },
     "defect-note":()=>{
       const record=state.result;
       const old=record.decisions[marker]||{};
@@ -741,6 +848,8 @@ async function doAction(name,target) {
       render();
     },
     pin:pinForm,
+    "crop-apply":()=>{cropRect=readCropInputs();cropUpdate();},
+    "crop-clear":()=>{cropRect=null;cropUpdate();},
     "study-add":studyForm,
     "study-open":()=>{state.study=state.studies.find(item=>item.id===id);render();},
     close:commitModal,
@@ -767,6 +876,43 @@ async function runAction(target) {
     target.disabled=false;
   }
 }
+
+let cropStageEl=null;
+
+document.addEventListener("pointerdown",event=>{
+  const stage=event.target.closest("#crop-stage");
+  if (!stage) return;
+  const rect=stage.getBoundingClientRect();
+  const u=Math.min(1,Math.max(0,(event.clientX-rect.left)/rect.width));
+  const v=Math.min(1,Math.max(0,(event.clientY-rect.top)/rect.height));
+  cropRect=[u,v,u,v];
+  try{stage.setPointerCapture(event.pointerId);}catch{/* older engines */}
+  cropStageEl=stage;
+  stage.dataset.dragging="1";
+  cropUpdate();
+});
+
+document.addEventListener("pointermove",event=>{
+  const stage=cropStageEl;
+  if (!stage||stage.dataset.dragging!=="1") return;
+  const bounds=stage.getBoundingClientRect();
+  const u=Math.min(1,Math.max(0,(event.clientX-bounds.left)/bounds.width));
+  const v=Math.min(1,Math.max(0,(event.clientY-bounds.top)/bounds.height));
+  cropRect=[Math.min(cropRect[0],u),Math.min(cropRect[1],v),Math.max(cropRect[2],u),Math.max(cropRect[3],v)];
+  cropUpdate();
+});
+
+document.addEventListener("pointerup",()=>{
+  const stage=cropStageEl;
+  if (!stage||stage.dataset.dragging!=="1") return;
+  stage.dataset.dragging="0";
+  cropStageEl=null;
+  if (cropRect&&(cropRect[2]-cropRect[0]<0.02||cropRect[3]-cropRect[1]<0.02)) {
+    cropRect=null;
+    cropUpdate();
+    toast("Drag a larger rectangle; the excerpt must cover at least 2% of each edge.",true);
+  }
+});
 
 document.addEventListener("click",event=>{
   const target=event.target.closest("[data-do]");
@@ -818,6 +964,27 @@ document.addEventListener("change",event=>{
     q("#field-kind")?.focus();
   }
   if (event.target.id==="field-study_kind") studyOptions(event.target.value);
+  if (event.target.id==="field-partial") {
+    const details=q("#crop-details");
+    details.open=event.target.checked;
+    const sources=q("#field-include_sources");
+    if (sources) sources.disabled=event.target.checked;
+  }
+  if (event.target.id==="field-include_sources"&&event.target.checked) {
+    const partial=q("#field-partial");
+    if (partial?.checked) {
+      event.target.checked=false;
+      toast("Partial evidence packets cannot carry original uploads.",true);
+    }
+  }
+  if (event.target.id?.startsWith("field-crop-")) {
+    try {
+      cropRect=readCropInputs();
+      cropUpdate();
+    } catch (error) {
+      // Wait for the user to finish entering all four coordinates.
+    }
+  }
 });
 
 dialog.addEventListener("close",()=>{
