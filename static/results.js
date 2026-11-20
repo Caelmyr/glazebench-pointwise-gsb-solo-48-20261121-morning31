@@ -1,7 +1,7 @@
 import {badge, btn, e, img, link, n, percent, plot, stat, table, date, dots} from "./widgets.js";
 
 const colors = ["#58836b","#b26a4a","#818d40","#786f99"];
-const layers = {overlay:"Measurement map",source:"Source plane",paired:"Paired plane",reference:"Reference image"};
+const layers = {overlay:"Measurement map",source:"Source plane",paired:"Paired plane",darker:"Darker parallel plane",reference:"Reference image"};
 
 export function metricSet(record) {
   const m = record.metrics;
@@ -12,7 +12,11 @@ export function metricSet(record) {
       const reviewed = Object.values(record.decisions);
       return [["Observed",m.total_observations],["Confirmed",reviewed.filter(item=>item.decision==="confirm").length],["Dismissed",reviewed.filter(item=>item.decision==="dismiss").length]];
     },
-    glare: () => [["Strong glare",percent(m.strong_glare_percent)],["Counted hotspots",m.hotspot_count],["Paired support",percent(m.support.overlap_percent)]],
+    glare: () => {
+      const rows=[["Strong glare",percent(m.strong_glare_percent)],["Counted hotspots",m.hotspot_count],["Paired support",percent(m.support.overlap_percent)]];
+      if (m.dark_exposure) rows.push(["Recovered from darker",n(m.dark_exposure.recovered_pixels,0)+" px"],["Still unmeasured",n(m.dark_exposure.still_clipped_pixels + m.dark_exposure.outside_darker_frame_pixels,0)+" px"]);
+      return rows;
+    },
     direction: () => [["Left-bright detail",percent(m.left_strong_percent)],["Right-bright detail",percent(m.right_strong_percent)],["Paired support",percent(m.support.overlap_percent)]],
     texture: () => [["Medium local roughness",n(m.grid_roughness["50"],5)],["Ridge axis",m.texture_orientation ? n(m.texture_orientation.ridge_angle_clockwise)+"°" : "—"],["Coherence",n(m.texture_orientation?.coherence,3)]],
     craze: () => [["Trace length",`${n(m.network_length)} ${m.length_unit}`],["Junctions",n(m.junctions,0)],["Closed cells",n(m.closed_cell_count,0)]],
@@ -70,7 +74,12 @@ function profileDetail(m) {
 }
 
 function glareDetail(m) {
+  const dark=m.dark_exposure;
+  const darkBlock=dark?`<h3>Darker parallel exposure</h3>
+    <p class="plot-note">Outlined regions on the map are pixels taken from <strong>${e(dark.capture_name)}</strong>, normalized with a gain of ${n(dark.normalization_gain,4)}.</p>
+    <div class="metrics">${stat("Recovered pixels",n(dark.recovered_pixels,0))}${stat("Recovered share",percent(dark.recovered_percent_of_measured))}${stat("Clipped in both",n(dark.still_clipped_pixels,0))}${stat("Outside darker frame",n(dark.outside_darker_frame_pixels,0))}</div>`:"";
   return `<h3>Glare hotspots</h3><p class="plot-note">${e(m.note)} Balancing gain ${n(m.gain,4)}.</p>
+    ${darkBlock}
     ${table(["Hotspot","Pixels","Area mm²"],m.hotspots.map((item,index)=>[index+1,item.pixels,n(item.area_mm2,3)]))}`;
 }
 
@@ -105,7 +114,7 @@ function details(record) {
 
 export function resultCard(record, layer, currentRevision) {
   const path=`/api/results/${record.id}`;
-  const available = ["overlay","source",...(record.pictures.paired ? ["paired"] : []),...(record.metrics.reference_image ? ["reference"] : [])];
+  const available = ["overlay","source",...(record.pictures.paired ? ["paired"] : []),...(record.pictures.darker ? ["darker"] : []),...(record.metrics.reference_image ? ["reference"] : [])];
   const old = record.source_version !== currentRevision;
   return `<section class="card stack">
     <div class="title-row"><div><h3>${e(record.label)}</h3><small>Specimen revision ${record.source_version} · ${e(date(record.created_at))}</small></div>${old ? badge("Earlier specimen revision","caution") : badge("Saved measurement","ready")}</div>
@@ -115,7 +124,9 @@ export function resultCard(record, layer, currentRevision) {
     ${metricSet(record)}
     <section>${details(record)}</section>
     <details><summary>Measurement source</summary>${table(["Property","Value"],[
-      ["Image",record.provenance.photo.display_name],["Image role",record.provenance.photo.role],["Region",record.provenance.region?.name || "Entire plane"],
+      ["Image",record.provenance.photo.display_name],["Image role",record.provenance.photo.role],
+      ...(record.provenance.darker_parallel_photo?[["Darker parallel image",record.provenance.darker_parallel_photo.display_name],["Darker image role",record.provenance.darker_parallel_photo.role]]:[]),
+      ["Region",record.provenance.region?.name || "Entire plane"],
       ["Photo digest",record.provenance.photo.original_digest],
       ["Supported area",percent(record.support.available_percent)],
       ["Clipped pixels",record.support.clipped_pixels],

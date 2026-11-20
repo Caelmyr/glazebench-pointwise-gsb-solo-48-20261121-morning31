@@ -12,13 +12,17 @@ from .store import make_id
 from .photos import store_capture
 
 
-DEMO_KEY = "glazebench.training.v1"
+DEMO_KEY = "glazebench.training.v2"
 PLANE_SIZE = (620, 472)
 PHOTO_SIZE = (766, 598)
-DEMO_ROLES = ("diffuse", "parallel", "cross", "rake-left", "rake-right")
+DEMO_ROLES = ("diffuse", "parallel", "parallel-dark", "cross", "rake-left", "rake-right")
+DARK_PARALLEL_EXPOSURE = 0.42
 POSES = {
     "diffuse": [[0.092, 0.086], [0.911, 0.112], [0.894, 0.912], [0.081, 0.889]],
     "parallel": [[0.122, 0.107], [0.910, 0.084], [0.925, 0.871], [0.101, 0.916]],
+    # Same vantage as the normal parallel capture; an alpha inset applied during
+    # rendering leaves an unsupported rim in the registered plane.
+    "parallel-dark": [[0.126, 0.111], [0.906, 0.088], [0.921, 0.867], [0.105, 0.912]],
     "cross": [[0.079, 0.101], [0.908, 0.119], [0.877, 0.916], [0.081, 0.909]],
     "rake-left": [[0.089, 0.094], [0.894, 0.088], [0.902, 0.905], [0.064, 0.911]],
     "rake-right": [[0.094, 0.095], [0.913, 0.094], [0.926, 0.906], [0.112, 0.893]],
@@ -196,6 +200,11 @@ def gloss_reflection(field, role):
     intensity = 0.079 * low if role == "diffuse" else 0.34 * low + 0.24 * hotspot + 0.12 * elongated
     if role == "cross":
         intensity = (0.009 + hotspot * 0.018) * low
+    if role in ("parallel", "parallel-dark"):
+        # A tight, very bright core blows out in both parallel exposures on
+        # purpose, so the pipeline must keep its center unmeasured.
+        core = np.exp(-(((x - 0.585) / 0.030) ** 2 + ((y - 0.405) / 0.038) ** 2))
+        intensity += 1.55 * core * field.glaze
     return intensity * (1 - field.graphite_marks * 0.58)
 
 
@@ -211,7 +220,12 @@ def light_field(field, role):
     else:
         side = np.clip(0.98 + dx * 0.38 - dy * 0.31, 0.64, 1.2)
         reflection = gloss_reflection(field, role)
-        exposure = 0.88 if role == "cross" else 1.09 if role == "parallel" else 1.0
+        if role == "cross":
+            exposure = 0.88
+        elif role == "parallel-dark":
+            exposure = 1.09 * DARK_PARALLEL_EXPOSURE
+        else:
+            exposure = 1.09
         rgb = field.diffuse * (broad * side * exposure)[:, :, None]
         rgb += reflection[:, :, None] * np.array([0.69, 0.79, 0.82], dtype=np.float32)
     return np.clip(rgb, 0, 1)
@@ -236,7 +250,7 @@ def tile_alpha(x, y):
     return np.clip(0.5 - sdf * 410, 0, 1)
 
 
-def warp_to_photo(array, corners, photo_size, seed):
+def warp_to_photo(array, corners, photo_size, seed, alpha_inset=0.0):
     width, height = photo_size
     photo_to_tile = np.linalg.inv(homography(DEFAULT_CORNERS, corners))
     photo_y, photo_x = np.indices((height, width), dtype=np.float32)
@@ -252,19 +266,34 @@ def warp_to_photo(array, corners, photo_size, seed):
         axis=2,
     )
     alpha = tile_alpha(tile_u, tile_v)
+    if alpha_inset:
+        # Simulate a capture that does not cover the whole marked plane: the
+        # inset border carries no specimen pixels and stays unsupported.
+        inside = (
+            (tile_u >= alpha_inset) & (tile_u <= 1 - alpha_inset)
+            & (tile_v >= alpha_inset) & (tile_v <= 1 - alpha_inset)
+        )
+        alpha = np.where(inside, alpha, 0.0)
     shadow = ndimage.shift(ndimage.gaussian_filter(alpha, 7), (9, 5), order=1, mode="constant")
     stage = desk_background(width, height, seed)
     stage *= (1 - 0.61 * shadow)[:, :, None]
     rim = np.clip(alpha - ndimage.minimum_filter(alpha, size=8), 0, 1)
     tile_image *= 1 - 0.24 * rim[:, :, None]
     mixed = stage * (1 - alpha[:, :, None]) + tile_image * alpha[:, :, None]
-    return linear_to_srgb(mixed)
+    return linear_to_srgb(mixed), alpha
 
 
 def render_photo(field, role, specimen):
     linear = light_field(field, role)
-    image = warp_to_photo(linear, POSES[role], PHOTO_SIZE, specimen.seed)
-    array = np.rint(np.clip(image, 0, 1) * 255).astype(np.uint8)
+    rgba, alpha = warp_to_photo(
+        linear, POSES[role], PHOTO_SIZE, specimen.seed,
+        alpha_inset=0.055 if role == "parallel-dark" else 0.0,
+    )
+    array = np.rint(np.clip(rgba, 0, 1) * 255).astype(np.uint8)
+    if role == "parallel-dark":
+        # Keep the unsupported border as real transparency through the upload pipeline.
+        alpha_plane = np.rint(np.clip(alpha, 0, 1) * 255).astype(np.uint8)
+        return Image.fromarray(np.dstack((array, alpha_plane)), mode="RGBA")
     return Image.fromarray(array)
 
 
@@ -293,7 +322,8 @@ def training_specimen(store, specimen):
         photo = store_capture(
             store.blobs, png_bytes(image), role,
             f"{specimen.name.lower().replace(' ', '-')}-{role}.png",
-            "Procedurally rendered ceramic training photograph.",
+            "Procedurally rendered ceramic training photograph."
+            + (" A darker parallel-polarized exposure for highlight recovery." if role == "parallel-dark" else ""),
             make_id(),
             synthetic=True,
         )

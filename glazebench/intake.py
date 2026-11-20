@@ -205,9 +205,9 @@ def import_measurements(store, archive, names, records, specimen):
         if not isinstance(pictures, dict):
             raise InputError("Measurement picture manifest is missing.")
         images = {}
-        for layer in ("source", "overlay", "paired"):
+        for layer in ("source", "overlay", "paired", "darker"):
             digest = pictures.get(layer)
-            if layer == "paired" and digest is None:
+            if layer in ("paired", "darker") and digest is None:
                 continue
             data = member_digest(archive, names, stem + f"-{layer}.png", digest)
             images[layer] = store.blobs.put(decoded_panel(data, f"{label} {layer}"))

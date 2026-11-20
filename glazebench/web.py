@@ -252,8 +252,11 @@ def register_measurements(api, store, heavy):
     @api.get("/results/<measurement_id>/image/<layer>")
     def measurement_image(measurement_id, layer):
         data = store.result(measurement_id)
-        chosen = enumeration(layer, ("overlay", "source", "paired", "reference"), "Measurement image")
-        digest = data["metrics"].get("reference_image") if chosen == "reference" else data["pictures"][chosen]
+        chosen = enumeration(layer, ("overlay", "source", "paired", "darker", "reference"), "Measurement image")
+        if chosen == "reference":
+            digest = data["metrics"].get("reference_image")
+        else:
+            digest = data["pictures"].get(chosen)
         return png_blob(store, digest)
 
     @api.get("/results/<measurement_id>/metrics.csv")
@@ -403,7 +406,7 @@ def register_desks(api, store, heavy):
     def received_measurement(received_id, entry_id, layer):
         packet = store.received(received_id)
         measurement = match_slot(packet["measurements"], identity(entry_id, "Measurement ID"), "measurement")
-        image = enumeration(layer, ("source", "overlay", "paired"), "Measurement layer")
+        image = enumeration(layer, ("source", "overlay", "paired", "darker"), "Measurement layer")
         return png_blob(store, measurement["pictures"].get(image))
 
     @api.get("/specimens/<specimen_id>/metrology")

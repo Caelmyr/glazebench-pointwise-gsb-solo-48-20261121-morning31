@@ -27,6 +27,7 @@ ROLE_LABELS = {
     "diffuse": "Diffuse front",
     "cross": "Cross-polarized",
     "parallel": "Parallel-polarized",
+    "parallel-dark": "Parallel-polarized · darker exposure",
     "rake-left": "Raking light from left",
     "rake-right": "Raking light from right",
     "reference": "Reference capture",

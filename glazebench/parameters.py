@@ -39,6 +39,7 @@ TOOLS = {
             "glare_fraction": {"kind": "number", "label": "Hotspot fraction", "default": 0.2, "min": 0.04, "max": 0.9, "step": 0.02},
             "minimum_hotspot": {"kind": "integer", "label": "Minimum hotspot px", "default": 30, "min": 3, "max": 5000},
             "balance_region": {"kind": "region", "label": "Exposure tie area", "default": None},
+            "darker_parallel_id": {"kind": "capture", "label": "Darker parallel exposure", "default": None},
         },
     },
     "direction": {
@@ -118,6 +119,8 @@ def parsed_option(key, field, raw):
     if kind == "point":
         return numeric_pair(raw, label, lower=0, upper=1)
     if kind == "region":
+        return identity(raw, label) if raw else None
+    if kind == "capture":
         return identity(raw, label) if raw else None
     if kind == "reference":
         return identity(raw, label)

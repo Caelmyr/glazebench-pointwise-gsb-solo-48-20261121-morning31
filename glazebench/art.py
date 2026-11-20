@@ -2,6 +2,7 @@ from io import BytesIO
 
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
+from scipy import ndimage
 
 from .photos import linear_to_srgb, png_bytes, uint8_image
 
@@ -58,6 +59,26 @@ def composite_color(frame, values, valid, stops, *, strength=0.72, unknown=None,
 def magnitude_overlay(frame, values, valid, scale, *, source=None, unknown=None):
     normalized = np.clip(values / max(float(scale), 0.001), 0, 1)
     return composite_color(frame, normalized, valid, SEQUENTIAL, source=source, unknown=unknown)
+
+
+def recovered_outline(underlying, recovered):
+    """Trace the border of pixels taken from the darker parallel exposure."""
+    if not np.any(recovered):
+        return underlying
+    inside = ndimage.binary_erosion(recovered, iterations=1, border_value=0)
+    border = recovered & ~inside
+    outer = ndimage.binary_dilation(border, iterations=1) & ~recovered
+    image = underlying.copy()
+    image[outer] = (0.10, 0.11, 0.10)
+    image[border] = (0.96, 0.78, 0.42)
+    return image
+
+
+def glare_overlay(frame, values, valid, scale, recovered, *, unknown=None):
+    picture = magnitude_overlay(frame, values, valid, scale, unknown=unknown)
+    rendered = np.asarray(picture.convert("RGB"), dtype=np.float32) / 255
+    rendered = recovered_outline(rendered, recovered)
+    return uint8_image(rendered, frame.valid.astype(np.float32))
 
 
 def signed_overlay(frame, values, valid, scale, *, source=None, unknown=None):

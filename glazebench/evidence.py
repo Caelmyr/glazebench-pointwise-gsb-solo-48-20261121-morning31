@@ -104,7 +104,7 @@ def source_index(tile, results):
     originals = {}
     for result in results:
         provenance = result["provenance"]
-        for capture in (provenance["photo"], provenance["paired_photo"]):
+        for capture in (provenance["photo"], provenance["paired_photo"], provenance.get("darker_parallel_photo")):
             if not capture:
                 continue
             digest = capture["original_digest"]

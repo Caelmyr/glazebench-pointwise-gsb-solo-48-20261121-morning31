@@ -4,6 +4,7 @@ from .art import (
     annotated_regions,
     base_rgba,
     coverage_overlay,
+    glare_overlay,
     magnitude_overlay,
     profile_overlay,
     reviewed_markers,
@@ -57,6 +58,28 @@ def selected_capture(tile, explicit, expected_role=None):
     if len(choices) > 1:
         raise InputError(f"Choose which registered {expected_role} photograph to measure.")
     return choices[0]
+
+
+def selected_darker_parallel(tile, explicit, primary_id):
+    """Resolve the optional darker parallel-polarized highlight-recovery capture.
+
+    Unlike the required pair, this third capture is opt-in: leaving the field
+    blank always runs the standard two-photo comparison.
+    """
+    if not explicit:
+        return None
+    plane = tile.get("plane")
+    registered = {plane["photo_id"], *tile["registrations"]} if plane else set()
+    found = next((item for item in tile["photos"] if item["id"] == explicit), None)
+    if found is None:
+        raise InputError("The selected darker parallel photo is no longer attached to this specimen.")
+    if found["id"] not in registered:
+        raise InputError("Register the darker parallel photo in the tile plane before measuring with it.")
+    if found["role"] != "parallel-dark":
+        raise InputError("The highlight-recovery capture needs the darker parallel-polarized role.")
+    if found["id"] == primary_id:
+        raise InputError("The darker parallel exposure must be a different photo from the main parallel capture.")
+    return found["id"]
 
 
 def capture_provenance(frame):
@@ -135,6 +158,11 @@ def resolve_parameters(store, tile, payload):
     params["comparison_id"] = selected_capture(tile, params["comparison_id"], roles[1]) if roles else None
     if not roles and payload.get("comparison_id"):
         raise InputError("This measurement uses one capture.")
+    params["darker_parallel_id"] = None
+    if kind == "glare":
+        params["darker_parallel_id"] = selected_darker_parallel(
+            tile, params["options"].get("darker_parallel_id"), params["photo_id"]
+        )
     reference = None
     if kind == "reference":
         reference = store.reference(params["options"]["reference_id"])
@@ -214,15 +242,17 @@ def compute_single(store, tile, frame, region, area, linear, correction, params,
     raise RuntimeError(f"Unsupported image measurement: {kind}.")
 
 
-def compute_pair(tile, first, second, area, params):
+def compute_pair(tile, first, second, area, params, darker=None):
     kind = params["kind"]
     options = params["options"]
     if kind == "glare":
         ties = active_region(tile, options["balance_region"])
         calibration_area = area if ties is None else region_domain(first.extent, tile, ties)
-        metrics, map_values, valid, unknown = measure_glare(first, second, area, calibration_area, options)
+        metrics, map_values, valid, unknown, recovered = measure_glare(
+            first, second, area, calibration_area, options, darker
+        )
         scale = max(options["glare_fraction"] * 2, 0.45)
-        image = magnitude_overlay(first, map_values, valid, scale, unknown=unknown)
+        image = glare_overlay(first, map_values, valid, scale, recovered, unknown=unknown)
         return metrics, image, theoretical_legend(kind, scale)
     metrics, values, valid, unknown = measure_direction(first, second, area, options)
     scale = max(metrics["local_threshold"] * 2.4, 0.06)
@@ -251,10 +281,11 @@ def evaluate(store, tile_id, payload):
     region = active_region(tile, params["region_id"])
     area = region_domain(frame.extent, tile, region)
     pair = specimen_frame(store.blobs, tile, params["comparison_id"]) if params["comparison_id"] else None
+    darker = specimen_frame(store.blobs, tile, params["darker_parallel_id"]) if params["darker_parallel_id"] else None
     correction = None
     linear = frame.linear
     if pair is not None:
-        metrics, picture, legend = compute_pair(tile, frame, pair, area, params)
+        metrics, picture, legend = compute_pair(tile, frame, pair, area, params, darker)
     else:
         linear, correction = corrected_linear(tile, frame, params["apply_neutral"])
         metrics, picture, legend = compute_single(store, tile, frame, region, area, linear, correction, params, reference)
@@ -273,6 +304,7 @@ def evaluate(store, tile_id, payload):
             "specimen": specimen_provenance(tile),
             "photo": capture_provenance(frame),
             "paired_photo": capture_provenance(pair) if pair else None,
+            "darker_parallel_photo": capture_provenance(darker) if darker else None,
             "region": region,
             "exclusions": [item for item in tile["regions"] if item["purpose"] == "ignore"],
             "neutral_card": correction,
@@ -288,6 +320,7 @@ def evaluate(store, tile_id, payload):
             "source": stored_preview(base_rgba(frame, linear), store.blobs),
             "overlay": stored_preview(picture, store.blobs),
             "paired": stored_preview(base_rgba(pair), store.blobs) if pair else None,
+            "darker": stored_preview(base_rgba(darker), store.blobs) if darker else None,
         },
     }
     return store.save_result(cache_key, result)

@@ -143,13 +143,19 @@ function measureControls() {
   const tool=state.config.tools[state.tool];
   const all=state.tile.photos.filter(item=>item.registered_url);
   const match=field=>sources(tool.capture_pair?all.filter(item=>item.role===tool.capture_pair[field]):all,null,tool.capture_pair?"Auto if unique":"Base capture");
+  const darkerChoices=state.tool==="glare"
+    ? selectField("Darker parallel exposure", "darker_parallel_id",
+        option("", "None / single exposure", "")
+        + all.filter(item=>item.role==="parallel-dark").map(item=>option(item.id,item.role_label+" · "+item.name)).join(""))
+    : "";
   return `<form id="measurement-form" class="form-stack">
     ${selectField("Measurement","kind",Object.entries(state.config.tools).map(([name,item])=>option(name,item.label,state.tool)).join(""))}
     <p class="soft">${e(tool.description)}</p>
     ${selectField(tool.capture_pair?"First photo":"Photo source","photo_id",match(0))}
     ${tool.capture_pair?selectField("Paired photo","comparison_id",match(1)):checkField("Apply saved neutral balance","apply_neutral",true)}
+    ${darkerChoices}
     ${selectField("Region","region_id",regions())}
-    <div class="form-columns">${Object.entries(tool.fields).map(([key,item])=>optionInput(key,item)).join("")}</div>
+    <div class="form-columns">${Object.entries(tool.fields).filter(([key])=>key!=="darker_parallel_id").map(([key,item])=>optionInput(key,item)).join("")}</div>
     ${state.tool==="profile"?btn("Mark line on image","mark-profile","secondary","measure"):""}
     <button class="button primary" type="submit">${icon("measure")}Run measurement</button>
   </form>`;
@@ -636,10 +642,12 @@ function parsedOptions(data,tool) {
 
 async function runMeasurement(data) {
   const revision=travel;
+  const options=parsedOptions(data,state.config.tools[state.tool]);
+  if (state.tool==="glare") options.darker_parallel_id=data.get("darker_parallel_id")||null;
   const result=await api(tileUrl()+"/results",{method:"POST",body:{
     kind:state.tool,photo_id:data.get("photo_id")||null,comparison_id:data.get("comparison_id")||null,
     region_id:data.get("region_id")||null,apply_neutral:data.has("apply_neutral"),
-    options:parsedOptions(data,state.config.tools[state.tool]),
+    options,
   }});
   if (revision!==travel) return;
   state.result=result;
